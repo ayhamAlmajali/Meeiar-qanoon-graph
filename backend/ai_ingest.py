@@ -1,5 +1,6 @@
 import gc
 import json
+import os
 import math
 from pathlib import Path
 import re
@@ -12,10 +13,10 @@ EMBEDDINGS_PATH = PROJECT_ROOT / "data" / "embeddings_index.json"
 INBOX_DIR = PROJECT_ROOT / "data" / "inbox_docs"
 INGESTED_LOG_PATH = PROJECT_ROOT / "data" / "ingested_files.json"
 
-OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
-OLLAMA_EMBED_URL = "http://127.0.0.1:11434/api/embeddings"
-CHAT_MODEL = "qwen2.5:7b"
-EMBED_MODEL = "bge-m3"
+OLLAMA_CHAT_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
+OLLAMA_EMBED_URL = os.environ.get("OLLAMA_EMBED_URL", "http://127.0.0.1:11434/api/embeddings")
+CHAT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "bge-m3")
 
 
 def get_embedding(text: str) -> list[float]:

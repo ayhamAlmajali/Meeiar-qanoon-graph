@@ -39,7 +39,11 @@ def rerank_articles(
 
     model = get_reranker()
     if model is None:
-        return [(art, 0.85) for art in articles[:top_k]]
+        fallback_scored = []
+        for idx, art in enumerate(articles[:top_k]):
+            rank_score = round(max(0.20, 0.70 - idx * 0.08), 4)
+            fallback_scored.append((art, rank_score))
+        return fallback_scored
 
     pairs = []
     for art in articles:

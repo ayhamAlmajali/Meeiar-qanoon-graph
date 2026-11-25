@@ -317,10 +317,14 @@ class QanoonGraphEngine:
         citations = "، ".join(
             f"المادة ({a['article_number']}) من {a['legislation_title']}" for a in articles[:3]
         )
+        top_leg = str(top.get("legislation_title", ""))
+        top_text = str(top.get("text", ""))
+        is_labor_context = ("العمل" in top_leg) and ("عامل" in top_text or "عاملة" in top_text or "العمل" in top_text)
+        labor_suffix = " (وفقاً لمبدأ النص الأعلى حماية للعامل ضمن نطاق أحكام العمل)." if is_labor_context else ""
         conflict_note = (
             f"تم رصد {len(conflicts)} ارتباط/تداخل تشريعي مباشر: {conflicts[0]['note']}."
             if conflicts
-            else "لم يُرصد تعارض إلغاء مباشر بين النصوص المطابقة، وتُطبّق القاعدة الأعلى حماية للعامل."
+            else f"لم يُرصد تعارض إلغاء مباشر بين النصوص المطابقة{labor_suffix}"
         )
         return (
             f"بناءً على تحليل قاعدة البيانات التشريعية ({citations}): "
