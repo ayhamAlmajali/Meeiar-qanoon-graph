@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useApp } from "../context/AppContext";
 import { usePageActions } from "../context/PageActionsContext";
 import { api, getErrorMessage } from "../services/api";
-import { Button, EmptyState, Icon, LoadingState, PageHeader, Panel, RelationBadge, StatusBadge } from "../components/common/UI";
+import { Button, EmptyState, Icon, LoadingState, OfficialSource, PageHeader, Panel, RelationBadge, StatusBadge, validHttpUrl } from "../components/common/UI";
 
 const sampleQuestions = [
   "هل يحق لصاحب العمل تحويل عقدي لعمل مرن وتقليل حقوقي؟",
@@ -20,20 +20,52 @@ function engineDescription(mode) {
   return value ? { label: "تحليل تشريعي", model: value } : { label: "تحليل تشريعي" };
 }
 
-function sourceLink(value) {
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    if (url.protocol === "http:" || url.protocol === "https:") return url.href;
-  } catch {
-    return null;
+function sourceKeys(source) {
+  const keys = [];
+  if (source.url) {
+    const url = new URL(source.url);
+    url.hash = "";
+    url.searchParams.sort();
+    keys.push(`url:${url.origin}${url.pathname.replace(/\/+$/, "")}${url.search}`);
   }
-  return null;
+  const label = source.label.toLocaleLowerCase().replace(/\s+/g, " ");
+  const title = source.legislation_title.toLocaleLowerCase().replace(/\s+/g, " ");
+  if (label || title) keys.push(`text:${label}|${title}`);
+  return keys;
+}
+
+function uniqueSources(value) {
+  if (!Array.isArray(value)) return [];
+  const sources = [];
+  const sourceIndexes = new Map();
+  value.forEach((item) => {
+    if (!item || typeof item !== "object") return;
+    const source = {
+      label: typeof item.label === "string" ? item.label.trim() : "",
+      legislation_title: typeof item.legislation_title === "string" ? item.legislation_title.trim() : "",
+      url: validHttpUrl(item.url)
+    };
+    if (!source.label && !source.legislation_title && !source.url) return;
+    const keys = sourceKeys(source);
+    const existingIndex = keys.map((key) => sourceIndexes.get(key)).find((index) => index != null);
+    if (existingIndex != null) {
+      const existing = sources[existingIndex];
+      if (!existing.label) existing.label = source.label;
+      if (!existing.legislation_title) existing.legislation_title = source.legislation_title;
+      if (!existing.url) existing.url = source.url;
+      sourceKeys(existing).forEach((key) => sourceIndexes.set(key, existingIndex));
+      keys.forEach((key) => sourceIndexes.set(key, existingIndex));
+      return;
+    }
+    const index = sources.length;
+    sources.push({ ...source, key: keys[0] || `source:${index}` });
+    keys.forEach((key) => sourceIndexes.set(key, index));
+  });
+  return sources;
 }
 
 function EvidenceCard({ article, onOpen }) {
   const item = article && typeof article === "object" ? article : {};
-  const url = sourceLink(item.official_source);
   return (
     <article className="evidence-card">
       <div className="evidence-title-row">
@@ -42,9 +74,7 @@ function EvidenceCard({ article, onOpen }) {
       </div>
       <p className="legal-excerpt" dir="rtl" lang="ar">{item.text || "لم يرد نص المادة ضمن نتيجة الخدمة."}</p>
       <div className="evidence-footer">
-        {url ? <a href={url} target="_blank" rel="noopener noreferrer"><Icon name="external" size={15} />المصدر الرسمي</a>
-          : item.official_source ? <span className="source-citation"><strong>المصدر الرسمي</strong>{item.official_source}</span>
-            : <span className="muted-copy">المصدر الرسمي غير متاح</span>}
+        <OfficialSource className="evidence-source" sourceUrl={item.source_url} sourceLabel={item.source_label} officialSource={item.official_source} />
         {item.id && <button className="text-button" type="button" onClick={() => onOpen(item.id)}>فتح التفاصيل</button>}
       </div>
     </article>
@@ -99,6 +129,7 @@ export default function AskPage() {
   const engine = result ? engineDescription(result.engine_mode) : null;
   const evidence = Array.isArray(result?.evidence_articles) ? result.evidence_articles : [];
   const relations = Array.isArray(result?.detected_relations) ? result.detected_relations : [];
+  const sources = uniqueSources(result?.sources);
 
   return (
     <>
@@ -141,6 +172,22 @@ export default function AskPage() {
               {relations.length ? <div className="stack-list">{relations.map((relation, index) => <RelationCard key={index} relation={relation} />)}</div> : <EmptyState title="لا توجد علاقات مرفقة" description="لم تُرجع الخدمة علاقات مرتبطة بالسؤال." />}
             </section>
           </div>
+          {sources.length > 0 && (
+            <details className="source-results" open={sources.length <= 4}>
+              <summary><span><Icon name="book" size={19} />المصادر والمراجع التشريعية</span><span className="count-pill">{sources.length.toLocaleString("ar")}</span></summary>
+              <div className="source-reference-list">
+                {sources.map((source) => (
+                  <article className="source-reference-card" key={source.key}>
+                    <div className="source-reference-copy">
+                      <strong>{source.legislation_title || "مرجع تشريعي"}</strong>
+                      {source.label && <span>{source.label}</span>}
+                    </div>
+                    <OfficialSource className="source-reference-action" heading="" sourceUrl={source.url} />
+                  </article>
+                ))}
+              </div>
+            </details>
+          )}
         </Panel>
       )}
     </>

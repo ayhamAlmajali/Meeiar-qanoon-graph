@@ -1,7 +1,79 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePageActions } from "../context/PageActionsContext";
 import { api, getErrorMessage } from "../services/api";
-import { EmptyState, ErrorState, Icon, legislationTypeLabel, LoadingState, PageHeader, Panel, StatusBadge } from "../components/common/UI";
+import { Button, EmptyState, ErrorState, Icon, legislationTypeLabel, LoadingState, OfficialSource, PageHeader, Panel, StatusBadge } from "../components/common/UI";
+
+const evolutionTypeMeta = {
+  repeals: ["إلغاء", "repeals"],
+  amends: ["تعديل", "amends"],
+  overlaps_with: ["تداخل تشريعي", "overlap"],
+  repealed_by: ["أُلغي بموجب", "repeals"],
+  amended_by: ["عُدّل بموجب", "amends"],
+  enacted: ["صدور التشريع", "enacted"]
+};
+
+function evolutionDateOrder(value) {
+  const match = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.exec(String(value || "").trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2] || 1);
+  const day = Number(match[3] || 1);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return date.getTime();
+}
+
+function sortEvolutionStages(stages) {
+  if (!Array.isArray(stages)) return [];
+  return stages.map((stage, index) => ({ stage, index, dateOrder: evolutionDateOrder(stage?.date) }))
+    .sort((a, b) => {
+      if (a.dateOrder == null && b.dateOrder != null) return 1;
+      if (a.dateOrder != null && b.dateOrder == null) return -1;
+      return (a.dateOrder ?? 0) - (b.dateOrder ?? 0) || a.index - b.index;
+    })
+    .map(({ stage }) => stage);
+}
+
+function EvolutionStage({ stage, onOpenArticle }) {
+  const change = evolutionTypeMeta[String(stage.change_type || "").toLowerCase()] || ["تطور تشريعي", "neutral"];
+  const date = typeof stage.date === "string" && stage.date.trim() ? stage.date.trim() : "التاريخ غير متاح";
+  const dateIsNumeric = /^\d{4}(?:-\d{2}){0,2}$/.test(date);
+  const title = typeof stage.legislation_title === "string" && stage.legislation_title.trim()
+    ? stage.legislation_title.trim()
+    : "تشريع غير محدد";
+  const articleNumber = stage.article_number == null ? "" : String(stage.article_number);
+  const reference = typeof stage.before_or_related_ref === "string" ? stage.before_or_related_ref.trim() : "";
+  const note = typeof stage.note === "string" ? stage.note.trim() : "";
+  const beforeText = typeof stage.before_text === "string" ? stage.before_text.trim() : "";
+  const currentText = typeof stage.current_text === "string" ? stage.current_text.trim() : "";
+
+  return (
+    <article className="evolution-stage">
+      <time className="evolution-stage-date" dir={dateIsNumeric ? "ltr" : "rtl"}>{date}</time>
+      <div className="evolution-stage-card">
+        <div className="evolution-stage-heading">
+          <div><span className={`evolution-kind evolution-kind-${change[1]}`}>{change[0]}</span>{stage.status && <StatusBadge status={stage.status} />}</div>
+          <h3>{articleNumber ? `المادة ${articleNumber} — ${title}` : title}</h3>
+        </div>
+        {reference && <p className="evolution-reference"><strong>المادة المرتبطة:</strong> {reference}</p>}
+        {note && <p className="evolution-note">{note}</p>}
+        {(beforeText || currentText) && (
+          <details className="evolution-text-comparison">
+            <summary>عرض النصوص المرتبطة بالتطور</summary>
+            <div>
+              {beforeText && <section><strong>النص السابق أو المرتبط</strong><p dir="rtl" lang="ar">{beforeText}</p></section>}
+              {currentText && <section><strong>النص الحالي</strong><p dir="rtl" lang="ar">{currentText}</p></section>}
+            </div>
+          </details>
+        )}
+        <div className="evolution-stage-actions">
+          <OfficialSource sourceUrl={stage.source_url} sourceLabel={stage.source_label} />
+          {stage.article_id && <Button variant="secondary" icon="book" onClick={() => onOpenArticle(stage.article_id)}>عرض تفاصيل المادة</Button>}
+        </div>
+      </div>
+    </article>
+  );
+}
 
 function dateValue(value) {
   const text = String(value || "").trim();
@@ -44,6 +116,38 @@ export default function TimelinePage() {
   const [dateTo, setDateTo] = useState("");
   const [reloadVersion, setReloadVersion] = useState(0);
   const [state, setState] = useState({ loading: true, articles: [], error: "" });
+  const [selectedLegislation, setSelectedLegislation] = useState("");
+  const [evolutionArticle, setEvolutionArticle] = useState("");
+  const [evolutionState, setEvolutionState] = useState({ loading: true, data: null, error: "" });
+  const evolutionController = useRef(null);
+
+  const loadEvolution = useCallback(async (legislationTitle = "", articleNumber = "") => {
+    evolutionController.current?.abort();
+    const controller = new AbortController();
+    evolutionController.current = controller;
+    setEvolutionState((current) => ({ ...current, loading: true, error: "" }));
+    try {
+      const data = await api.timelineEvolution({
+        legislation_title: legislationTitle,
+        article_number: articleNumber
+      }, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      if (!data || !Array.isArray(data.available_legislations) || !Array.isArray(data.stages)) {
+        throw new Error("استجابة التطور التشريعي غير متوقعة.");
+      }
+      setEvolutionState({ loading: false, data, error: "" });
+      setSelectedLegislation(data.selected_legislation || legislationTitle || "");
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setEvolutionState((current) => ({ ...current, loading: false, error: getErrorMessage(error) }));
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadEvolution();
+    return () => evolutionController.current?.abort();
+  }, [loadEvolution]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -89,10 +193,56 @@ export default function TimelinePage() {
     });
     return { years: [...groups.entries()].sort(([a], [b]) => Number(b) - Number(a)), undated };
   }, [filtered]);
+  const availableLegislations = Array.isArray(evolutionState.data?.available_legislations)
+    ? evolutionState.data.available_legislations
+    : [];
+  const evolutionStages = useMemo(
+    () => sortEvolutionStages(evolutionState.data?.stages),
+    [evolutionState.data]
+  );
+
+  const submitEvolutionFilters = (event) => {
+    event.preventDefault();
+    if (evolutionState.loading || !selectedLegislation.trim()) return;
+    void loadEvolution(selectedLegislation.trim(), evolutionArticle.trim());
+  };
+
+  const resetEvolutionFilters = () => {
+    setEvolutionArticle("");
+    void loadEvolution();
+  };
 
   return (
     <>
       <PageHeader eyebrow="التطور الزمني للتشريعات" title="الجدول الزمني" description="استكشف المواد المؤرخة بحسب تاريخ النفاذ المسجل في بيانات الخدمة. التواريخ غير المتاحة لا تُستنتج." actions={<span className="count-pill">{filtered.length.toLocaleString("ar")} مادة</span>} />
+      <Panel className="evolution-panel" aria-live="polite">
+        <div className="section-heading evolution-heading">
+          <div><p className="eyebrow">Legislative Evolution · التطور التشريعي</p><h2>تطور التشريع وعلاقاته</h2><p className="muted-copy">تابع مراحل الإلغاء والتعديل والتداخل أو صدور التشريع، مع الروابط والمراجع التي توفرها الخدمة.</p></div>
+        </div>
+        <form className="evolution-filters" onSubmit={submitEvolutionFilters}>
+          <label className="evolution-filter-field" htmlFor="evolution-legislation"><span>التشريع</span>
+            <select id="evolution-legislation" value={selectedLegislation} onChange={(event) => setSelectedLegislation(event.target.value)} disabled={evolutionState.loading || availableLegislations.length === 0}>
+              {availableLegislations.length ? availableLegislations.map((item) => <option key={item.legislation_title} value={item.legislation_title}>{item.legislation_title} ({Number(item.article_count || 0).toLocaleString("ar")} مادة)</option>) : <option value="">لا توجد تشريعات متاحة</option>}
+            </select>
+          </label>
+          <label className="evolution-filter-field" htmlFor="evolution-article"><span>رقم المادة (اختياري)</span>
+            <input id="evolution-article" type="text" value={evolutionArticle} onChange={(event) => setEvolutionArticle(event.target.value)} placeholder="مثال: 4" disabled={evolutionState.loading || availableLegislations.length === 0} />
+          </label>
+          <div className="evolution-filter-actions">
+            <Button type="submit" icon="search" disabled={evolutionState.loading || !selectedLegislation.trim()}>عرض التطور</Button>
+            <Button type="button" variant="secondary" icon="refresh" disabled={evolutionState.loading} onClick={resetEvolutionFilters}>إعادة الضبط</Button>
+          </div>
+        </form>
+        {evolutionState.loading ? <LoadingState label="جارٍ تحميل مراحل التطور التشريعي..." />
+          : evolutionState.error ? <ErrorState message={evolutionState.error} onRetry={() => loadEvolution(selectedLegislation, evolutionArticle)} />
+            : evolutionState.data ? (
+              <>
+                <div className="evolution-results-meta"><span>التشريع المحدد: <strong>{evolutionState.data.selected_legislation || selectedLegislation}</strong></span><span>{evolutionStages.length.toLocaleString("ar")} مرحلة</span></div>
+                {evolutionStages.length ? <div className="evolution-stage-list">{evolutionStages.map((stage, index) => <EvolutionStage key={`${stage.article_id || stage.change_type || "stage"}-${stage.date || "undated"}-${index}`} stage={stage} onOpenArticle={openArticle} />)}</div>
+                  : <EmptyState title="لا توجد مراحل تطور مسجلة" description="لم تُرجع الخدمة مراحل لهذا التشريع أو المادة المحددة." icon="timeline" />}
+              </>
+            ) : <EmptyState title="لا تتوفر بيانات التطور التشريعي" description="تعذّر تحميل التشريعات المتاحة حالياً." icon="timeline" />}
+      </Panel>
       <Panel className="timeline-filters">
         <label className="search-field timeline-search"><Icon name="search" size={19} /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ابحث باسم التشريع أو رقم المادة أو نصها..." aria-label="البحث في المواد" /></label>
         <label className="filter-field"><span>الحالة التشريعية</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">كل الحالات</option><option value="active">ساري</option><option value="amended">معدّل</option><option value="repealed">ملغى</option></select></label>

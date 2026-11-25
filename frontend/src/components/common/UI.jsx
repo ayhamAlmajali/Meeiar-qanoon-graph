@@ -44,6 +44,40 @@ export function Icon({ name, size = 20, className = "" }) {
   );
 }
 
+export function validHttpUrl(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+export function OfficialSource({
+  sourceUrl,
+  sourceLabel,
+  officialSource,
+  className = "",
+  heading = "المصدر الرسمي"
+}) {
+  const href = validHttpUrl(sourceUrl);
+  const label = typeof sourceLabel === "string" && sourceLabel.trim()
+    ? sourceLabel.trim()
+    : !href && typeof officialSource === "string"
+      ? officialSource.trim()
+      : "";
+  if (!href && !label) return null;
+
+  return (
+    <div className={`legal-source ${className}`.trim()}>
+      {heading && <strong>{heading}</strong>}
+      {label && <span className="legal-source-label">{label}</span>}
+      {href && <a className="source-link" href={href} target="_blank" rel="noopener noreferrer"><Icon name="external" size={15} />فتح المصدر الرسمي</a>}
+    </div>
+  );
+}
+
 export function PageHeader({ eyebrow, title, description, actions }) {
   return (
     <header className="page-header">

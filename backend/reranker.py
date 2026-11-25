@@ -1,9 +1,18 @@
-from typing import Any
 import math
+import os
+from typing import Any
+import unicodedata
 
 _RERANKER_MODEL = None
 _LOAD_FAILED = False
-MODEL_NAME = "BAAI/bge-reranker-v2-m3"
+MODEL_NAME = os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3").strip()
+ARABIC_TO_WESTERN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+
+
+def _norm(text: str) -> str:
+    if not text:
+        return ""
+    return unicodedata.normalize("NFKC", text).translate(ARABIC_TO_WESTERN_DIGITS).strip()
 
 
 def get_reranker():
@@ -13,47 +22,60 @@ def get_reranker():
     if _RERANKER_MODEL is None:
         try:
             from sentence_transformers import CrossEncoder
-            # تشغيله على المعالج المركزي لإبقاء الـ GPU متاحاً بالكامل لنموذج Ollama
-            _RERANKER_MODEL = CrossEncoder(MODEL_NAME, device="cpu", max_length=512)
+
+            device = os.environ.get("RERANKER_DEVICE", "cpu").strip() or "cpu"
+            max_len = int(os.environ.get("RERANKER_MAX_LENGTH", "512"))
+            # تشغيله على المعالج المركزي افتراضياً لإبقاء الـ GPU متاحاً لنموذج Ollama
+            _RERANKER_MODEL = CrossEncoder(MODEL_NAME, device=device, max_length=max_len)
         except Exception as exc:
-            print(f"[Reranker Warning] Fallback to base retrieval: {exc}")
+            print(f"[Reranker Warning] Fallback to base retrieval (unranked): {exc}", flush=True)
             _LOAD_FAILED = True
             return None
     return _RERANKER_MODEL
 
 
 def _sigmoid(x: float) -> float:
-    return 1.0 / (1.0 + math.exp(-x))
+    clamped = max(-60.0, min(60.0, float(x)))
+    return 1.0 / (1.0 + math.exp(-clamped))
 
 
 def rerank_articles(
     query: str,
     articles: list[dict[str, Any]],
     top_k: int = 5,
-) -> list[tuple[dict[str, Any], float]]:
+) -> list[tuple[dict[str, Any], float | None]]:
     """
     يعيد ترتيب المواد المسترجعة باستخدام Cross-Encoder ويرجع قائمة من (المادة، درجة_التطابق_المعيارية).
+    عند تعذر تحميل النموذج يرجع (المادة، None) دون اختلاق درجات رقمية.
     """
     if not articles:
         return []
 
+    clean_query = _norm(query)
+    if not clean_query:
+        return [(art, None) for art in articles[:top_k]]
+
     model = get_reranker()
     if model is None:
-        fallback_scored = []
-        for idx, art in enumerate(articles[:top_k]):
-            rank_score = round(max(0.20, 0.70 - idx * 0.08), 4)
-            fallback_scored.append((art, rank_score))
-        return fallback_scored
+        return [(art, None) for art in articles[:top_k]]
 
-    pairs = []
+    pairs: list[tuple[str, str]] = []
     for art in articles:
-        doc_text = f"{art.get('legislation_title', '')} - مادة {art.get('article_number', '')}: {art.get('text', '')}"
-        pairs.append((query, doc_text))
+        title = _norm(str(art.get("legislation_title", "")))
+        art_num = _norm(str(art.get("article_number", "")))
+        body = _norm(str(art.get("text", "")))
+        doc_text = f"{title} - مادة {art_num}: {body}"
+        pairs.append((clean_query, doc_text))
 
-    raw_scores = model.predict(pairs)
-    scored = []
+    try:
+        raw_scores = model.predict(pairs)
+    except Exception as exc:
+        print(f"[Reranker Warning] Predict failed, returning unranked results: {exc}", flush=True)
+        return [(art, None) for art in articles[:top_k]]
+
+    scored: list[tuple[dict[str, Any], float]] = []
     for art, score in zip(articles, raw_scores):
-        prob = round(float(_sigmoid(float(score))), 4)
+        prob = round(_sigmoid(float(score)), 4)
         scored.append((art, prob))
 
     scored.sort(key=lambda x: x[1], reverse=True)

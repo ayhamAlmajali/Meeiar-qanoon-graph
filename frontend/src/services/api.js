@@ -79,6 +79,17 @@ export const api = {
   summary: (options) => request("/graph/summary", options),
   graph: graphRequest,
   changes: (options) => request("/graph/changes", options),
+  timelineEvolution: ({ legislation_title = "", article_number = "" } = {}, options) => {
+    const params = new URLSearchParams();
+    if (typeof legislation_title === "string" && legislation_title.trim()) {
+      params.set("legislation_title", legislation_title.trim());
+    }
+    if (typeof article_number === "string" && article_number.trim()) {
+      params.set("article_number", article_number.trim());
+    }
+    const query = params.toString();
+    return request(`/timeline/evolution${query ? `?${query}` : ""}`, options);
+  },
   impact: (nodeId, options) => request(`/graph/impact/${encodeURIComponent(nodeId)}`, options),
   articles: (query = "", options) => request(`/articles?q=${encodeURIComponent(query)}`, options),
   article: (identifier, options) => request(`/articles/${encodeURIComponent(identifier)}`, options),

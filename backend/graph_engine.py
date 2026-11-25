@@ -1,21 +1,29 @@
-from urllib.parse import quote
 from collections import defaultdict, deque
 import json
 import os
 from pathlib import Path
 import re
 from typing import Any
+import unicodedata
+from urllib.parse import quote
 import urllib.request
 
 import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ARABIC_TO_WESTERN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+TASHKEEL_AND_TATWEEL_RE = re.compile(r"[\u064B-\u065F\u0670\u0640]")
 
 _EMBED_MATRIX_CACHE: dict[str, Any] = {
     "mtime": 0.0,
     "ids": [],
     "matrix": None,
+}
+
+_SOURCE_FILE_CACHE: dict[str, Any] = {
+    "ts": 0.0,
+    "files": [],
+    "manifest": {},
 }
 
 
@@ -61,12 +69,35 @@ def _load_env_if_present() -> None:
 
 
 def normalize_text(text: str) -> str:
-    t = text.translate(ARABIC_TO_WESTERN_DIGITS).strip()
+    if not text:
+        return ""
+    t = unicodedata.normalize("NFKC", text).translate(ARABIC_TO_WESTERN_DIGITS).strip()
+    t = TASHKEEL_AND_TATWEEL_RE.sub("", t)
     t = re.sub(r"[إأآا]", "ا", t)
     t = re.sub(r"ى", "ي", t)
     t = re.sub(r"ة", "ه", t)
     t = re.sub(r"[^\w\s]", " ", t)
     return re.sub(r"\s+", " ", t).lower()
+
+
+def _extract_canonical_law_key(title: str, explicit_type: str = "") -> str:
+    clean = re.sub(r"\s+", " ", normalize_text(title)).strip()
+    if "دستور" in clean:
+        leg_type = "constitution"
+    elif "نظام" in clean:
+        leg_type = "regulation"
+    elif "تعليمات" in clean or "قرار" in clean:
+        leg_type = "instructions"
+    elif "قانون" in clean:
+        leg_type = "law"
+    else:
+        leg_type = (explicit_type or "law").strip().lower() or "law"
+
+    num_m = re.search(r"رقم\s*(\d+)", clean)
+    year_m = re.search(r"لسنه\s*(\d{4})", clean)
+    if num_m and year_m:
+        return f"{leg_type}_{num_m.group(1)}_{year_m.group(1)}"
+    return clean
 
 
 def load_legislations(json_path: str = "data/legislations.json") -> list[dict[str, Any]]:
@@ -78,7 +109,6 @@ def load_legislations(json_path: str = "data/legislations.json") -> list[dict[st
     return data.get("articles", [])
 
 
-
 REPO_BLOB_BASE = os.environ.get(
     "SOURCE_REPO_BASE_URL",
     "https://github.com/ayhamAlmajali/qanoon-graph/blob/main/",
@@ -86,7 +116,8 @@ REPO_BLOB_BASE = os.environ.get(
 
 
 def _norm_source_token(value: str) -> str:
-    s = str(value or "").lower()
+    s = unicodedata.normalize("NFKC", str(value or "")).lower()
+    s = TASHKEEL_AND_TATWEEL_RE.sub("", s)
     for ch in ("أ", "إ", "آ"):
         s = s.replace(ch, "ا")
     s = s.replace("ى", "ي").replace("ة", "ه")
@@ -95,18 +126,43 @@ def _norm_source_token(value: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _discover_repo_source_files() -> list[str]:
+def _get_cached_repo_sources() -> tuple[list[str], dict[str, Any]]:
+    import time
+
+    now = time.monotonic()
+    if _SOURCE_FILE_CACHE["files"] and (now - _SOURCE_FILE_CACHE["ts"]) < 30.0:
+        return _SOURCE_FILE_CACHE["files"], _SOURCE_FILE_CACHE["manifest"]
+
     found: list[str] = []
     for rel_dir in ("data/raw_pdfs", "data/inbox_docs"):
         d = PROJECT_ROOT / rel_dir
         if d.exists():
             for f in sorted(d.iterdir()):
-                if f.is_file():
+                if f.is_file() and not f.name.endswith(".meta.json"):
                     found.append(f"{rel_dir}/{f.name}")
-    return found
+
+    manifest: dict[str, Any] = {}
+    manifest_path = PROJECT_ROOT / "data" / "sources_manifest.json"
+    if manifest_path.exists():
+        try:
+            loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                manifest = loaded
+        except Exception:
+            manifest = {}
+
+    _SOURCE_FILE_CACHE["ts"] = now
+    _SOURCE_FILE_CACHE["files"] = found
+    _SOURCE_FILE_CACHE["manifest"] = manifest
+    return found, manifest
 
 
 def resolve_article_source(article: dict[str, Any]) -> dict[str, str | None]:
+    existing_url = str(article.get("source_url") or "").strip()
+    existing_lbl = str(article.get("source_label") or "").strip()
+    if existing_url.startswith(("http://", "https://")):
+        return {"source_label": existing_lbl or existing_url, "source_url": existing_url}
+
     raw = str(article.get("official_source") or "").strip()
     title = str(article.get("legislation_title") or "").strip()
     if not raw and not title:
@@ -115,16 +171,28 @@ def resolve_article_source(article: dict[str, Any]) -> dict[str, str | None]:
     if raw.startswith("http://") or raw.startswith("https://"):
         return {"source_label": raw, "source_url": raw}
 
+    repo_files, manifest = _get_cached_repo_sources()
+
+    # التحقق أولاً من سجل المصادر الرسمية المسحوبة (sources_manifest.json)
+    cleaned = re.sub(r"^ملف\s*pdf\s*:\s*", "", raw, flags=re.IGNORECASE).strip()
+    base_name = Path(cleaned).name if cleaned else ""
+    if base_name and base_name in manifest:
+        meta = manifest[base_name]
+        official_url = str(meta.get("source_url") or "").strip()
+        if official_url.startswith(("http://", "https://")):
+            return {
+                "source_label": str(meta.get("title") or cleaned or base_name),
+                "source_url": official_url,
+            }
+
     m = re.search(r"((?:data/(?:raw_pdfs|inbox_docs)/[^\s]+))", raw)
     if m:
         rel_path = m.group(1).lstrip("./")
         encoded = "/".join(quote(part) for part in rel_path.split("/"))
         return {"source_label": raw, "source_url": f"{REPO_BLOB_BASE}{encoded}"}
 
-    cleaned = re.sub(r"^ملف\s*pdf\s*:\s*", "", raw, flags=re.IGNORECASE).strip()
     norm_raw = _norm_source_token(cleaned)
     norm_title = _norm_source_token(title)
-    repo_files = _discover_repo_source_files()
 
     for rel_path in repo_files:
         fname = Path(rel_path).name
@@ -149,6 +217,7 @@ def enrich_article_with_source(article: dict[str, Any]) -> dict[str, Any]:
         item["source_label"] = src_info["source_label"]
     if src_info.get("source_url") and not item.get("source_url"):
         item["source_url"] = src_info["source_url"]
+    item.pop("_norm_haystack", None)
     return item
 
 
@@ -158,33 +227,59 @@ class QanoonGraphEngine:
         self.nodes: dict[str, dict[str, Any]] = {}
         self.edges: list[dict[str, Any]] = []
         self.adjacency: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self._precompute_index()
         self._build_graph()
+
+    def _precompute_index(self) -> None:
+        for art in self.articles:
+            src_info = resolve_article_source(art)
+            if src_info.get("source_label") and not art.get("source_label"):
+                art["source_label"] = src_info["source_label"]
+            if src_info.get("source_url") and not art.get("source_url"):
+                art["source_url"] = src_info["source_url"]
+
+            if not art.get("canonical_law_id"):
+                art["canonical_law_id"] = _extract_canonical_law_key(
+                    str(art.get("legislation_title", "")),
+                    str(art.get("legislation_type", "")),
+                )
+
+            art["_norm_haystack"] = normalize_text(" ".join([
+                art.get("legislation_title", ""),
+                str(art.get("article_number", "")),
+                art.get("status", ""),
+                art.get("text", ""),
+                " ".join(art.get("topic_tags", [])),
+            ]))
 
     def _build_graph(self) -> None:
         for art in self.articles:
             art_id = art["id"]
-            art_num = str(art.get("article_number", "")).translate(ARABIC_TO_WESTERN_DIGITS).strip()
+            art_num = unicodedata.normalize("NFKC", str(art.get("article_number", ""))).translate(ARABIC_TO_WESTERN_DIGITS).strip()
             title = art.get("legislation_title", "")
             self.nodes[art_id] = {
                 "id": art_id,
                 "kind": "article",
                 "label": f"{title} - مادة ({art_num})",
                 "legislation_title": title,
+                "canonical_law_id": art.get("canonical_law_id", ""),
                 "legislation_type": art.get("legislation_type", ""),
                 "article_number": art_num,
                 "effective_date": art.get("effective_date", ""),
                 "status": art.get("status", "ساري"),
                 "topic_tags": art.get("topic_tags", []),
                 "official_source": art.get("official_source", ""),
+                "source_label": art.get("source_label"),
+                "source_url": art.get("source_url"),
                 "text": art.get("text", ""),
             }
 
         for art in self.articles:
             art_id = art["id"]
             for rel in art.get("relations", []):
-                target_id = rel.get("target_ref", "").strip()
-                rel_type = rel.get("relation_type", "details_or_links")
-                note = rel.get("note", "")
+                target_id = str(rel.get("target_ref") or "").strip()
+                rel_type = str(rel.get("relation_type") or "details_or_links").strip()
+                note = str(rel.get("note") or "").strip()
                 if not target_id:
                     continue
 
@@ -232,11 +327,21 @@ class QanoonGraphEngine:
         }
 
     def get_article_by_id_or_number(self, identifier: str) -> dict[str, Any] | None:
-        clean = identifier.translate(ARABIC_TO_WESTERN_DIGITS).strip()
+        clean = unicodedata.normalize("NFKC", identifier).translate(ARABIC_TO_WESTERN_DIGITS).strip()
+        # 1) المطابقة الدقيقة بالمعرف الفريد أولاً
         for art in self.articles:
             if art["id"] == clean:
                 return art
-            num = str(art.get("article_number", "")).translate(ARABIC_TO_WESTERN_DIGITS).strip()
+        # 2) مطابقة بصيغة canonical_law_id:article_number إن وُجدت
+        if ":" in clean:
+            law_part, num_part = clean.split(":", 1)
+            for art in self.articles:
+                num = unicodedata.normalize("NFKC", str(art.get("article_number", ""))).translate(ARABIC_TO_WESTERN_DIGITS).strip()
+                if num == num_part.strip() and law_part.strip() in str(art.get("canonical_law_id", "")):
+                    return art
+        # 3) الرجوع لرقم المادة عند عدم وجود معرف مطابق
+        for art in self.articles:
+            num = unicodedata.normalize("NFKC", str(art.get("article_number", ""))).translate(ARABIC_TO_WESTERN_DIGITS).strip()
             if num == clean:
                 return art
         return None
@@ -269,7 +374,7 @@ class QanoonGraphEngine:
                 sim_lookup = {}
 
         stop_tokens = {
-            "في", "من", "على", "الى", "عن", "مع", "ما", "هو", "هي", "هل",
+            "في", "من", "على", "الي", "عن", "مع", "ما", "هو", "هي", "هل",
             "قانون", "نظام", "تعليمات", "قرار", "ماده", "الماده", "حكم", "احكام", "الاردن", "الاردني"
         }
         tokens = [tok for tok in q_norm.split() if len(tok) > 1 and tok not in stop_tokens]
@@ -278,7 +383,7 @@ class QanoonGraphEngine:
         scored: list[tuple[float, dict[str, Any]]] = []
 
         for art in self.articles:
-            haystack = normalize_text(" ".join([
+            haystack = art.get("_norm_haystack") or normalize_text(" ".join([
                 art.get("legislation_title", ""),
                 str(art.get("article_number", "")),
                 art.get("status", ""),
@@ -299,26 +404,47 @@ class QanoonGraphEngine:
 
     def trace_impact_chain(self, node_id: str, max_depth: int = 3) -> dict[str, Any]:
         if node_id not in self.nodes:
-            return {"root": node_id, "impacted_nodes": [], "impact_paths": []}
+            return {
+                "root": node_id,
+                "impacted_nodes": [],
+                "impact_paths": [],
+                "potentially_outdated_regulations": [],
+            }
 
         visited = {node_id}
         queue = deque([(node_id, 0)])
         impacted_nodes = []
         impact_paths = []
+        potentially_outdated_regulations = []
+
+        # الاتجاهات ذات الأثر التشريعي الفعلي فقط (تعديل/إلغاء/تعارض صادر، أو تشريعات فرعية صادرة بمقتضى المادة)
+        propagating_types = {
+            "amends",
+            "repeals",
+            "contradicts",
+            "overlaps_with",
+            "possible_implicit_repeal",
+            "incoming_issued_under",
+        }
 
         while queue:
             current, depth = queue.popleft()
             if depth >= max_depth:
                 continue
             for edge in self.adjacency.get(current, []):
+                rtype = edge["relation_type"]
+                if rtype not in propagating_types:
+                    continue
                 nxt = edge["target"]
                 impact_paths.append({
                     "from": edge["source_label"],
                     "to": edge["target_label"],
-                    "relation_type": edge["relation_type"],
+                    "relation_type": rtype,
                     "note": edge["note"],
                     "depth": depth + 1,
                 })
+                if rtype == "incoming_issued_under" and nxt in self.nodes:
+                    potentially_outdated_regulations.append(self.nodes[nxt])
                 if nxt not in visited:
                     visited.add(nxt)
                     impacted_nodes.append(self.nodes[nxt])
@@ -328,19 +454,54 @@ class QanoonGraphEngine:
             "root": self.nodes[node_id],
             "impacted_nodes": impacted_nodes,
             "impact_paths": impact_paths,
+            "potentially_outdated_regulations": potentially_outdated_regulations,
         }
 
     def detect_conflicts_and_changes(self) -> dict[str, list[dict[str, Any]]]:
-        repeals, amendments, overlaps = [], [], []
+        repeals, amendments, contradictions, overlaps, subordinate_links = [], [], [], [], []
         for edge in self.edges:
             rtype = edge["relation_type"]
-            if rtype in {"repeals", "repealed_by"}:
+            if rtype in {"repeals", "possible_implicit_repeal"}:
                 repeals.append(edge)
-            elif rtype in {"amends", "amended_by"}:
+            elif rtype == "amends":
                 amendments.append(edge)
+            elif rtype == "contradicts":
+                contradictions.append(edge)
             elif rtype == "overlaps_with":
                 overlaps.append(edge)
-        return {"repeals": repeals, "amendments": amendments, "overlaps": overlaps}
+            elif rtype == "issued_under":
+                subordinate_links.append(edge)
+        return {
+            "repeals": repeals,
+            "amendments": amendments,
+            "contradictions": contradictions,
+            "overlaps": overlaps,
+            "subordinate_regulations": subordinate_links,
+        }
+
+    def _verify_answer_citations(self, answer: str, articles: list[dict[str, Any]]) -> str:
+        norm_ans = unicodedata.normalize("NFKC", answer).translate(ARABIC_TO_WESTERN_DIGITS)
+        cited_nums = {
+            m.group(1)
+            for m in re.finditer(r"(?:المادة|مادة)\s*[\(\[]?\s*(\d+)\s*[\)\]]?", norm_ans)
+        }
+        if not cited_nums:
+            return answer
+
+        valid_nums = {
+            unicodedata.normalize("NFKC", str(a.get("article_number", ""))).translate(ARABIC_TO_WESTERN_DIGITS).strip()
+            for a in articles
+            if a.get("article_number")
+        }
+        unverified = sorted(num for num in cited_nums if num not in valid_nums)
+        if not unverified:
+            return answer
+
+        warning = (
+            f"\n\nتنبيه تدقيق آلي: وردت في الصياغة إشارة إلى رقم مادة غير مدرج ضمن المواد المسترجعة أعلاه ({'، '.join(unverified)})؛ "
+            "يرجى الاعتماد على المواد الموثقة في قسم الأدلة فقط."
+        )
+        return answer + warning
 
     def analyze_legal_question(self, question: str, role: str = "lawyer") -> dict[str, Any]:
         candidates = self.search_articles(question, min_score=4.0)[:10]
@@ -365,9 +526,14 @@ class QanoonGraphEngine:
 
         try:
             from reranker import rerank_articles as _rr_fn
+
             reranked_pairs = _rr_fn(question, candidates, top_k=6)
-            filtered_pairs = [(a, sc) for a, sc in reranked_pairs if sc >= 0.25]
-            matched_articles = [a for a, _ in (filtered_pairs or reranked_pairs[:3])]
+            scored_pairs = [(a, sc) for a, sc in reranked_pairs if sc is not None]
+            if scored_pairs:
+                filtered_pairs = [(a, sc) for a, sc in scored_pairs if sc >= 0.25]
+                matched_articles = [a for a, _ in (filtered_pairs or scored_pairs[:3])]
+            else:
+                matched_articles = [a for a, _ in reranked_pairs[:6]]
         except Exception:
             matched_articles = candidates[:6]
 
@@ -382,10 +548,12 @@ class QanoonGraphEngine:
 
         conflicts = [
             e for e in related_edges
-            if any(tag in e["relation_type"] for tag in ["overlaps_with", "repeals", "amends"])
+            if e["relation_type"] in {"contradicts", "overlaps_with", "repeals", "amends", "incoming_repeals", "incoming_amends"}
         ]
 
         llm_answer, engine_mode = self._try_llm_synthesis(question, matched_articles, conflicts, role=role)
+        if llm_answer:
+            llm_answer = self._verify_answer_citations(llm_answer, matched_articles)
         verdict = llm_answer or self._rule_based_synthesis(question, matched_articles, conflicts)
 
         enriched_evidence = [enrich_article_with_source(a) for a in matched_articles]
@@ -405,8 +573,11 @@ class QanoonGraphEngine:
 
         return {
             "question": question,
+            "role": role,
             "engine_mode": engine_mode,
-            "has_conflict_or_overlap": len(conflicts) > 0,
+            "has_conflict_or_overlap": any(
+                e["relation_type"] in {"contradicts", "overlaps_with", "repeals"} for e in conflicts
+            ),
             "verdict": verdict,
             "evidence_articles": enriched_evidence,
             "sources": unique_sources,
@@ -487,7 +658,7 @@ class QanoonGraphEngine:
             + ("\n".join(rel_blocks) if rel_blocks else "لا توجد علاقات إضافية مسجلة.")
         )
 
-        # 1. Local Ollama (qwen2.5:7b)
+        # 1. Local Ollama
         ollama_url = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
         ollama_model = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
         try:
@@ -518,8 +689,9 @@ class QanoonGraphEngine:
         groq_key = os.environ.get("GROQ_API_KEY")
         if groq_key:
             try:
+                groq_model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
                 payload = json.dumps({
-                    "model": os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
+                    "model": groq_model,
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
@@ -539,7 +711,7 @@ class QanoonGraphEngine:
                     data = json.loads(resp.read().decode("utf-8"))
                     answer = (data["choices"][0]["message"]["content"] or "").strip()
                     if answer:
-                        return answer, "groq:llama-3.3-70b"
+                        return answer, f"groq:{groq_model}"
             except Exception:
                 pass
 
@@ -588,13 +760,19 @@ class QanoonGraphEngine:
         article_number: str | None = None,
     ) -> dict[str, Any]:
         counts: dict[str, int] = {}
+        canonical_by_title: dict[str, str] = {}
         for art in self.articles:
             t = str(art.get("legislation_title") or "").strip()
             if t:
                 counts[t] = counts.get(t, 0) + 1
+                canonical_by_title[t] = str(art.get("canonical_law_id") or "")
 
         available = [
-            {"legislation_title": t, "article_count": c}
+            {
+                "legislation_title": t,
+                "canonical_law_id": canonical_by_title.get(t),
+                "article_count": c,
+            }
             for t, c in sorted(counts.items(), key=lambda x: (-x[1], x[0]))
         ]
         if not available:
@@ -608,26 +786,32 @@ class QanoonGraphEngine:
             else:
                 chosen = available[0]["legislation_title"]
 
+        chosen_canonical = canonical_by_title.get(chosen, "")
         by_id = {a.get("id"): a for a in self.articles if a.get("id")}
         main_arts = [
             a for a in self.articles
             if str(a.get("legislation_title") or "").strip() == chosen
+            or (chosen_canonical and str(a.get("canonical_law_id") or "") == chosen_canonical)
         ]
         if article_number and article_number.strip():
-            num_q = article_number.strip()
-            filtered_num = [a for a in main_arts if str(a.get("article_number") or "").strip() == num_q]
+            num_q = unicodedata.normalize("NFKC", article_number).translate(ARABIC_TO_WESTERN_DIGITS).strip()
+            filtered_num = [
+                a for a in main_arts
+                if unicodedata.normalize("NFKC", str(a.get("article_number") or "")).translate(ARABIC_TO_WESTERN_DIGITS).strip() == num_q
+            ]
             if filtered_num:
                 main_arts = filtered_num
 
         main_ids = {a.get("id") for a in main_arts if a.get("id")}
         stages: list[dict[str, Any]] = []
 
-        # 1) محطات نفاذ التشريع المختار وعلاقاته الصادرة (تعديل / إلغاء / تداخل)
+        # 1) محطات نفاذ التشريع المختار وعلاقاته الصادرة
         for art in main_arts:
             enriched = enrich_article_with_source(art)
             rels = [
                 r for r in (art.get("relations") or [])
-                if isinstance(r, dict) and r.get("relation_type") in {"repeals", "amends", "overlaps_with", "repealed_by", "amended_by"}
+                if isinstance(r, dict)
+                and r.get("relation_type") in {"repeals", "amends", "contradicts", "overlaps_with", "issued_under"}
             ]
             if rels:
                 for rel in rels:
@@ -637,7 +821,7 @@ class QanoonGraphEngine:
                         "change_type": rel.get("relation_type"),
                         "article_id": art.get("id"),
                         "article_number": art.get("article_number"),
-                        "legislation_title": chosen,
+                        "legislation_title": art.get("legislation_title") or chosen,
                         "status": art.get("status", "ساري"),
                         "before_or_related_ref": (
                             f"{target.get('legislation_title')} - مادة ({target.get('article_number')})"
@@ -650,15 +834,15 @@ class QanoonGraphEngine:
                         "source_url": enriched.get("source_url"),
                     })
 
-        # 2) محطات لاحقة من تشريعات أخرى عدّلت أو ألغت أو تداخلت مع هذا التشريع
+        # 2) محطات لاحقة من تشريعات أخرى عدّلت أو ألغت أو صدرت بمقتضى هذا التشريع
         for other in self.articles:
-            if str(other.get("legislation_title") or "").strip() == chosen:
+            if other.get("id") in main_ids:
                 continue
             enriched_other = enrich_article_with_source(other)
             for rel in (other.get("relations") or []):
                 if not isinstance(rel, dict):
                     continue
-                if rel.get("relation_type") not in {"repeals", "amends", "overlaps_with", "repealed_by", "amended_by"}:
+                if rel.get("relation_type") not in {"repeals", "amends", "contradicts", "overlaps_with", "issued_under"}:
                     continue
                 if rel.get("target_ref") in main_ids:
                     target = by_id.get(rel.get("target_ref"))
@@ -693,7 +877,7 @@ class QanoonGraphEngine:
                     "change_type": "enacted",
                     "article_id": art.get("id"),
                     "article_number": art.get("article_number"),
-                    "legislation_title": chosen,
+                    "legislation_title": art.get("legislation_title") or chosen,
                     "status": art.get("status", "ساري"),
                     "before_or_related_ref": "",
                     "before_text": "",
@@ -706,6 +890,7 @@ class QanoonGraphEngine:
         stages.sort(key=lambda s: str(s.get("date") or "9999"))
         return {
             "selected_legislation": chosen,
+            "canonical_law_id": chosen_canonical,
             "article_filter": article_number,
             "total_stages": len(stages),
             "available_legislations": available,

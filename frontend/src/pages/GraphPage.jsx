@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import cytoscape from "cytoscape";
 import { api, getErrorMessage } from "../services/api";
-import { Button, EmptyState, ErrorState, Icon, legislationTypeLabel, LoadingState, PageHeader, Panel, RelationBadge, StatusBadge, relationLabel } from "../components/common/UI";
+import { Button, EmptyState, ErrorState, Icon, legislationTypeLabel, LoadingState, OfficialSource, PageHeader, Panel, RelationBadge, StatusBadge, relationLabel } from "../components/common/UI";
 
 const relationClasses = {
   repeals: "edge-repeal",
@@ -61,20 +61,6 @@ function ChangeGroup({ title, items, className, nodeMap }) {
   );
 }
 
-function SourceLink({ value }) {
-  const text = String(value || "").trim();
-  if (!text) return <span className="muted-copy">المصدر الرسمي غير متاح</span>;
-  try {
-    const url = new URL(text);
-    if (url.protocol === "http:" || url.protocol === "https:") {
-      return <a className="source-link" href={url.href} target="_blank" rel="noopener noreferrer"><Icon name="external" size={16} />فتح المصدر الرسمي</a>;
-    }
-  } catch {
-    return <span className="muted-copy">{text}</span>;
-  }
-  return <span className="muted-copy">{text}</span>;
-}
-
 function RelationshipArticleCard({ node, fallbackLabel, role }) {
   const isArticle = Boolean(node && node.kind !== "external_ref");
   const valueOrFallback = (value) => value == null || String(value).trim() === "" ? DATA_UNAVAILABLE : value;
@@ -94,12 +80,7 @@ function RelationshipArticleCard({ node, fallbackLabel, role }) {
       <div className="legal-text mt-3 max-h-52 overflow-auto text-sm" dir="rtl" lang="ar">
         {valueOrFallback(isArticle ? node.text : null)}
       </div>
-      <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
-        <strong>المصدر الرسمي:</strong>
-        {isArticle && node.official_source
-          ? <SourceLink value={node.official_source} />
-          : <span className="muted-copy">{DATA_UNAVAILABLE}</span>}
-      </div>
+      {isArticle && <OfficialSource className="mt-2 text-sm" sourceUrl={node.source_url} sourceLabel={node.source_label} officialSource={node.official_source} />}
     </article>
   );
 }
@@ -439,7 +420,6 @@ export default function GraphPage() {
   };
 
   const article = detailState.article || selectedNode;
-  const source = article?.official_source;
   const topicTags = Array.isArray(article?.topic_tags) ? article.topic_tags : [];
   const paths = detailState.impact?.impact_paths;
   const impacted = detailState.impact?.impacted_nodes || [];
@@ -535,7 +515,7 @@ export default function GraphPage() {
                         {topicTags.length > 0 && <div className="tag-list">{topicTags.map((tag) => <span className="topic-tag" key={tag}>{tag}</span>)}</div>}
                         {detailState.error && <div className="inline-error" role="alert">{detailState.error}</div>}
                         {article?.text && <div className="legal-text node-legal-text" dir="rtl" lang="ar">{article.text}</div>}
-                        {source && <SourceLink value={source} />}
+                        <OfficialSource className="source-row" sourceUrl={article?.source_url} sourceLabel={article?.source_label} officialSource={article?.official_source} />
                         {detailState.neighbors.length > 0 && <section className="node-subsection"><h4>مواد مرتبطة</h4>{detailState.neighbors.slice(0, 8).map((edge, index) => {
                           const relatedId = edge.source === article?.id ? edge.target : edge.source;
                           const relatedNode = nodeMap.get(String(relatedId));

@@ -1,20 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, getErrorMessage } from "../../services/api";
-import { Button, EmptyState, legislationTypeLabel, LoadingState, RelationBadge, StatusBadge } from "../common/UI";
-
-function sourceView(value) {
-  const text = String(value || "").trim();
-  if (!text) return null;
-  try {
-    const url = new URL(text);
-    if (url.protocol === "https:" || url.protocol === "http:") {
-      return { label: "فتح المصدر الرسمي", href: url.href };
-    }
-  } catch {
-    return { label: text, href: null };
-  }
-  return { label: text, href: null };
-}
+import { Button, EmptyState, legislationTypeLabel, LoadingState, OfficialSource, RelationBadge, StatusBadge } from "../common/UI";
 
 function topicList(tags) {
   if (Array.isArray(tags)) return tags.filter(Boolean);
@@ -50,7 +36,6 @@ export default function ArticleDetailDialog({ identifier, onClose, onOpenArticle
 
   if (!identifier) return null;
   const article = state.data?.article;
-  const source = sourceView(article?.official_source);
   const neighbors = Array.isArray(state.data?.neighbors) ? state.data.neighbors : [];
 
   return (
@@ -76,11 +61,7 @@ export default function ArticleDetailDialog({ identifier, onClose, onOpenArticle
                     <div className="tag-list">{topicList(article.topic_tags).map((tag) => <span className="topic-tag" key={tag}>{tag}</span>)}</div>
                   )}
                   <div className="legal-text" lang="ar" dir="rtl">{article.text || "لم يرد نص لهذه المادة في بيانات الخدمة."}</div>
-                  {source && (
-                    <div className="source-row"><strong>المصدر الرسمي</strong>
-                      {source.href ? <a href={source.href} target="_blank" rel="noopener noreferrer">{source.label}</a> : <span>{source.label}</span>}
-                    </div>
-                  )}
+                  <OfficialSource className="source-row" sourceUrl={article.source_url} sourceLabel={article.source_label} officialSource={article.official_source} />
                   <section className="dialog-related">
                     <h3>العلاقات التشريعية</h3>
                     {neighbors.length ? neighbors.map((edge, index) => {
