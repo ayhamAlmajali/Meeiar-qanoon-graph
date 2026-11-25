@@ -397,7 +397,14 @@ class QanoonGraphEngine:
                 scored.append((total_score, art))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [item[1] for item in scored]
+        results: list[dict[str, Any]] = []
+        for _, art in scored:
+            aid = str(art.get("id") or "")
+            cos_val = round(float(sim_lookup.get(aid, 0.0)), 4)
+            art_copy = dict(art)
+            art_copy["cosine_similarity"] = cos_val
+            results.append(art_copy)
+        return results
 
     def trace_impact_chain(self, node_id: str, max_depth: int = 3) -> dict[str, Any]:
         if node_id not in self.nodes:
@@ -507,7 +514,6 @@ class QanoonGraphEngine:
         if not candidates:
             return {
                 "question": question,
-                "role": role,
                 "engine_mode": "insufficient_evidence",
                 "has_conflict_or_overlap": False,
                 "verdict": (
@@ -520,10 +526,14 @@ class QanoonGraphEngine:
                 "detected_relations": [],
             }
 
+        rerank_scores_by_id: dict[str, float] = {}
         try:
             from reranker import rerank_articles as _rr_fn
 
             reranked_pairs = _rr_fn(question, candidates, top_k=6)
+            for a, sc in reranked_pairs:
+                if sc is not None and a.get("id"):
+                    rerank_scores_by_id[str(a["id"])] = round(float(sc), 4)
             scored_pairs = [(a, sc) for a, sc in reranked_pairs if sc is not None]
             if scored_pairs:
                 filtered_pairs = [(a, sc) for a, sc in scored_pairs if sc >= 0.25]
@@ -547,12 +557,21 @@ class QanoonGraphEngine:
             if e["relation_type"] in {"contradicts", "overlaps_with", "repeals", "amends", "incoming_repeals", "incoming_amends"}
         ]
 
-        llm_answer, engine_mode = self._try_llm_synthesis(question, matched_articles, conflicts, role=role)
+        llm_answer, engine_mode = self._try_llm_synthesis(question, matched_articles, conflicts)
         if llm_answer:
             llm_answer = self._verify_answer_citations(llm_answer, matched_articles)
         verdict = llm_answer or self._rule_based_synthesis(question, matched_articles, conflicts)
 
-        enriched_evidence = [enrich_article_with_source(a) for a in matched_articles]
+        enriched_evidence = []
+        for a in matched_articles:
+            item = enrich_article_with_source(a)
+            aid = str(a.get("id") or "")
+            cos_val = a.get("cosine_similarity")
+            cos_val = round(float(cos_val), 4) if cos_val is not None else 0.0
+            rr_val = rerank_scores_by_id.get(aid)
+            item["cosine_similarity"] = cos_val
+            item["similarity"] = cos_val if cos_val > 0.0 else (rr_val if rr_val is not None else 0.0)
+            enriched_evidence.append(item)
         unique_sources: list[dict[str, str | None]] = []
         seen_src: set[str] = set()
         for a in enriched_evidence:
@@ -569,7 +588,6 @@ class QanoonGraphEngine:
 
         return {
             "question": question,
-            "role": role,
             "engine_mode": engine_mode,
             "has_conflict_or_overlap": any(
                 e["relation_type"] in {"contradicts", "overlaps_with", "repeals"} for e in conflicts

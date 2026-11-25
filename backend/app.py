@@ -360,12 +360,18 @@ def audit_clause_or_draft(payload: AuditRequest) -> dict[str, Any]:
             f"{art.get('text')}\n  العلاقات في الرسم البياني: {rel_notes or 'لا يوجد'}"
         )
         enriched_art = enrich_article_with_source(art)
+        raw_cos = art.get("cosine_similarity")
+        if raw_cos is None:
+            raw_cos = enriched_art.get("cosine_similarity")
+        cos_sim = round(float(raw_cos), 4) if raw_cos is not None else 0.0
+        rr_sc = round(float(score), 4) if score is not None else None
         referenced.append({
             "id": art["id"],
             "legislation_title": art.get("legislation_title"),
             "article_number": art.get("article_number"),
             "status": art.get("status", "ساري"),
-            "similarity": score,
+            "cosine_similarity": cos_sim,
+            "similarity": cos_sim if cos_sim > 0.0 else (rr_sc if rr_sc is not None else 0.0),
             "rank_status": "ranked" if score is not None else "unranked",
             "source_label": enriched_art.get("source_label"),
             "source_url": enriched_art.get("source_url"),
