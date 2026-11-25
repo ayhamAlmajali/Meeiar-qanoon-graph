@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { useApp } from "../context/AppContext";
 import { usePageActions } from "../context/PageActionsContext";
 import { api, getErrorMessage } from "../services/api";
-import { Button, EmptyState, Icon, LoadingState, OfficialSource, PageHeader, Panel, RelationBadge, StatusBadge, validHttpUrl } from "../components/common/UI";
+import { Button, EmptyState, Icon, LoadingState, OfficialSource, PageHeader, Panel, RelationBadge, SimilarityBadge, StatusBadge, validHttpUrl } from "../components/common/UI";
 
 const sampleQuestions = [
   "هل يحق لصاحب العمل تحويل عقدي لعمل مرن وتقليل حقوقي؟",
@@ -70,7 +69,7 @@ function EvidenceCard({ article, onOpen }) {
     <article className="evidence-card">
       <div className="evidence-title-row">
         <div><span className="eyebrow">مادة مستشهد بها</span><h3>{item.article_number != null ? `المادة ${item.article_number} — ` : ""}{item.legislation_title || "تشريع غير محدد"}</h3></div>
-        <StatusBadge status={item.status} />
+        <div className="evidence-badges"><StatusBadge status={item.status} /><SimilarityBadge article={item} /></div>
       </div>
       <p className="legal-excerpt" dir="rtl" lang="ar">{item.text || "لم يرد نص المادة ضمن نتيجة الخدمة."}</p>
       <div className="evidence-footer">
@@ -95,7 +94,6 @@ function RelationCard({ relation }) {
 }
 
 export default function AskPage() {
-  const { role } = useApp();
   const { openArticle } = usePageActions();
   const [question, setQuestion] = useState("");
   const [result, setResult] = useState(null);
@@ -108,7 +106,7 @@ export default function AskPage() {
     setState({ loading: true, error: "", copied: false });
     setResult(null);
     try {
-      setResult(await api.ask({ question: clean, role }));
+      setResult(await api.ask({ question: clean }));
       setState({ loading: false, error: "", copied: false });
     } catch (error) {
       setState({ loading: false, error: getErrorMessage(error), copied: false });

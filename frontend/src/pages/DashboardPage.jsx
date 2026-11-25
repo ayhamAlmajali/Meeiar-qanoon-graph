@@ -27,7 +27,7 @@ function ChangeSummary({ title, items, tone }) {
 }
 
 export default function DashboardPage() {
-  const { role, refreshVersion } = useApp();
+  const { refreshVersion } = useApp();
   const [summaryState, setSummaryState] = useState({ loading: true, data: null, error: "" });
   const [changesState, setChangesState] = useState({ loading: true, data: null, error: "" });
 
@@ -78,7 +78,7 @@ export default function DashboardPage() {
           <div><p className="eyebrow">ابدأ من هنا</p><h2>مساحات العمل</h2><p className="muted-copy">انتقل مباشرة إلى الأداة المناسبة لمهمتك.</p></div>
         </div>
         <div className="shortcut-grid">
-          {shortcuts.filter((item) => !item.legislatorOnly || role === "legislator").map((item) => (
+          {shortcuts.map((item) => (
             <Link to={item.to} className="shortcut-card" key={item.to}>
               <span className="shortcut-icon"><Icon name={item.icon} size={22} /></span>
               <span className="shortcut-content"><strong>{item.title}</strong><span>{item.description}</span></span>

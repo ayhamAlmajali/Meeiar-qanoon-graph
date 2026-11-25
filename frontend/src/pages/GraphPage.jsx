@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import cytoscape from "cytoscape";
 import { api, getErrorMessage } from "../services/api";
-import { Button, EmptyState, ErrorState, Icon, legislationTypeLabel, LoadingState, OfficialSource, PageHeader, Panel, RelationBadge, StatusBadge, relationLabel } from "../components/common/UI";
+import { Button, EmptyState, ErrorState, Icon, legislationTypeLabel, LoadingState, OfficialSource, PageHeader, Panel, RelationBadge, SimilarityBadge, StatusBadge, relationLabel } from "../components/common/UI";
 
 const relationClasses = {
   repeals: "edge-repeal",
@@ -9,13 +9,28 @@ const relationClasses = {
   amends: "edge-amendment",
   amended_by: "edge-amendment",
   overlaps_with: "edge-overlap",
+  contradicts: "edge-contradiction",
+  references: "edge-reference",
   protects_over: "edge-protection",
   implements: "edge-implementation",
   details_or_links: "edge-link"
 };
 
-const CONFLICT_RELATIONS = new Set(["repeals", "repealed_by", "amends", "amended_by", "overlaps_with"]);
-const CONFLICT_RELATION_LIST = ["repeals", "repealed_by", "amends", "amended_by", "overlaps_with"];
+const GRAPH_LAYOUT = Object.freeze({
+  name: "cose",
+  animate: false,
+  padding: 48,
+  nodeRepulsion: 160000,
+  nodeOverlap: 72,
+  idealEdgeLength: 250,
+  edgeElasticity: 90,
+  componentSpacing: 210,
+  gravity: 0.08,
+  numIter: 1100
+});
+
+const CONFLICT_RELATIONS = new Set(["repeals", "repealed_by", "amends", "amended_by", "overlaps_with", "contradicts"]);
+const CONFLICT_RELATION_LIST = ["repeals", "repealed_by", "amends", "amended_by", "overlaps_with", "contradicts"];
 const DATA_UNAVAILABLE = "غير متوفر في البيانات الحالية";
 
 function nodeLabel(node) {
@@ -37,6 +52,39 @@ function statusKey(value) {
 function nodeStatusClass(status) {
   const key = statusKey(status);
   return key === "repealed" ? "node-repealed" : key === "amended" ? "node-amended" : key === "active" ? "node-active" : "node-unknown";
+}
+
+function applyImpactHighlight(graph, selectedId, impact, nodeMap) {
+  if (!graph) return;
+  graph.elements().removeClass("impact-node current-node impact-edge");
+  graph.nodes().unselect();
+  graph.getElementById(String(selectedId)).addClass("current-node").select();
+
+  const impactedIds = new Set((impact?.impacted_nodes || []).map((node) => String(node.id)));
+  const idByLabel = new Map([...nodeMap].map(([id, node]) => [String(node.label || ""), String(id)]));
+  const paths = (Array.isArray(impact?.impact_paths) ? impact.impact_paths : []).map((path) => {
+    const source = nodeMap.has(String(path.from)) ? String(path.from) : idByLabel.get(String(path.from));
+    const target = nodeMap.has(String(path.to)) ? String(path.to) : idByLabel.get(String(path.to));
+    if (source) impactedIds.add(source);
+    if (target) impactedIds.add(target);
+    return {
+      source,
+      target,
+      relation: String(path.relation_type || "").replace(/^incoming_/, "").toLowerCase()
+    };
+  }).filter((path) => path.source && path.target && path.relation);
+
+  graph.nodes().forEach((node) => {
+    if (impactedIds.has(node.id()) && node.id() !== String(selectedId)) node.addClass("impact-node");
+  });
+  graph.edges().forEach((edge) => {
+    const relation = String(edge.data("relation") || "").replace(/^incoming_/, "").toLowerCase();
+    const matchesPath = paths.some((path) => path.relation === relation && (
+      (path.source === edge.source().id() && path.target === edge.target().id()) ||
+      (path.source === edge.target().id() && path.target === edge.source().id())
+    ));
+    if (matchesPath) edge.addClass("impact-edge");
+  });
 }
 
 function changeTitle(edge, nodeMap) {
@@ -61,7 +109,7 @@ function ChangeGroup({ title, items, className, nodeMap }) {
   );
 }
 
-function RelationshipArticleCard({ node, fallbackLabel, role }) {
+function RelationshipArticleCard({ node, fallbackLabel, caption }) {
   const isArticle = Boolean(node && node.kind !== "external_ref");
   const valueOrFallback = (value) => value == null || String(value).trim() === "" ? DATA_UNAVAILABLE : value;
   const heading = node
@@ -70,7 +118,7 @@ function RelationshipArticleCard({ node, fallbackLabel, role }) {
 
   return (
     <article className="min-w-0 rounded-xl border border-slate-200 bg-white p-3">
-      <p className="eyebrow">{role}</p>
+      <p className="eyebrow">{caption}</p>
       <h3 className="my-2 break-words text-base font-semibold text-slate-800">{heading}</h3>
       <dl className="grid gap-2 text-sm text-slate-600">
         <div><dt className="inline font-semibold">التشريع: </dt><dd className="inline">{valueOrFallback(isArticle ? node.legislation_title : null)}</dd></div>
@@ -105,6 +153,7 @@ function GraphCanvas({ graphData, onSelectNode, onSelectEdge, graphRef, onReady 
       classes: nodeStatusClass(node.status) + (node.kind === "external_ref" ? " node-external" : "")
     })).concat(edges.map((edge, index) => {
       const relation = String(edge.relation_type || "").toLowerCase();
+      const relationClass = relationClasses[relation.replace(/^incoming_/, "")] || "edge-link";
       return {
         data: {
           id: `relationship-${index}`,
@@ -115,7 +164,7 @@ function GraphCanvas({ graphData, onSelectNode, onSelectEdge, graphRef, onReady 
           sourceLabel: edge.source_label || "",
           targetLabel: edge.target_label || ""
         },
-        classes: relationClasses[relation] || "edge-link"
+        classes: relationClass
       };
     }));
 
@@ -124,64 +173,56 @@ function GraphCanvas({ graphData, onSelectNode, onSelectEdge, graphRef, onReady 
       elements,
       minZoom: 0.2,
       maxZoom: 2.8,
-      layout: {
-        name: "cose",
-        animate: false,
-        fit: true,
-        padding: 48,
-        nodeRepulsion: 115000,
-        nodeOverlap: 54,
-        idealEdgeLength: 220,
-        edgeElasticity: 90,
-        componentSpacing: 190,
-        gravity: 0.08,
-        numIter: 1100
-      },
+      layout: { ...GRAPH_LAYOUT, fit: true },
       style: [
         { selector: "node", style: {
           "shape": "round-rectangle",
-          "background-color": "#E7F2EF",
-          "border-color": "#7AB6AA",
+          "background-color": "#F4EEE2",
+          "border-color": "#65769B",
           "border-width": 1.5,
           "label": "data(label)",
           "font-family": "IBM Plex Sans Arabic, sans-serif",
-          "font-size": 13,
+          "font-size": 14,
           "font-weight": 500,
-          "color": "#22364A",
+          "color": "#292A2D",
           "text-wrap": "wrap",
-          "text-max-width": 205,
+          "text-max-width": 218,
           "text-valign": "center",
           "text-halign": "center",
-          "width": 238,
-          "height": 76,
+          "width": 252,
+          "height": 82,
           "padding": "10px",
           "text-outline-width": 0,
           "overlay-opacity": 0,
           "transition-property": "background-color, border-color, opacity",
           "transition-duration": "160ms"
         } },
-        { selector: "node.node-repealed", style: { "background-color": "#FCEDEA", "border-color": "#CB8078", "color": "#773C3B" } },
-        { selector: "node.node-amended", style: { "background-color": "#FFF4DF", "border-color": "#D4A64E", "color": "#705329" } },
-        { selector: "node.node-unknown", style: { "background-color": "#F0F2F4", "border-color": "#A7B1BC", "color": "#586777" } },
-        { selector: "node.node-external", style: { "shape": "ellipse", "width": 200, "height": 68, "background-color": "#F1EDF9", "border-color": "#A392C0", "color": "#594A75" } },
+        { selector: "node.node-repealed", style: { "background-color": "#F7E9E4", "border-color": "#B76648", "color": "#754637" } },
+        { selector: "node.node-amended", style: { "background-color": "#F5EBD4", "border-color": "#C39A50", "color": "#6F562A" } },
+        { selector: "node.node-unknown", style: { "background-color": "#EEE8DC", "border-color": "#A7A093", "color": "#57534D" } },
+        { selector: "node.node-external", style: { "shape": "ellipse", "width": 210, "height": 72, "background-color": "#E8EAF1", "border-color": "#7583A1", "color": "#394C7B" } },
         { selector: "edge", style: {
           "width": 2,
-          "line-color": "#A8B6C2",
+          "line-color": "#AAA296",
           "target-arrow-shape": "triangle",
-          "target-arrow-color": "#A8B6C2",
+          "target-arrow-color": "#AAA296",
           "arrow-scale": 0.8,
           "curve-style": "bezier",
           "opacity": 0.76,
           "overlay-opacity": 0
         } },
-        { selector: "edge.edge-repeal", style: { "line-color": "#C6655B", "target-arrow-color": "#C6655B" } },
-        { selector: "edge.edge-amendment", style: { "line-color": "#C4933C", "target-arrow-color": "#C4933C" } },
-        { selector: "edge.edge-overlap", style: { "line-color": "#4D8DA5", "target-arrow-color": "#4D8DA5" } },
-        { selector: "edge.edge-protection", style: { "line-color": "#6F8F56", "target-arrow-color": "#6F8F56" } },
-        { selector: "edge.edge-implementation", style: { "line-color": "#7A70AA", "target-arrow-color": "#7A70AA" } },
-        { selector: "node:selected", style: { "border-color": "#0F766E", "border-width": 4, "background-blacken": -0.07 } },
-        { selector: "node.impact-node", style: { "background-color": "#D9F0E7", "border-color": "#159A91", "border-width": 3, "z-index": 5 } },
-        { selector: "node.current-node", style: { "border-color": "#101C2C", "border-width": 4, "z-index": 6 } },
+        { selector: "edge.edge-repeal", style: { "line-color": "#B76648", "target-arrow-color": "#B76648" } },
+        { selector: "edge.edge-amendment", style: { "line-color": "#C39A50", "target-arrow-color": "#C39A50" } },
+        { selector: "edge.edge-overlap", style: { "line-color": "#394C7B", "target-arrow-color": "#394C7B" } },
+        { selector: "edge.edge-contradiction", style: { "line-color": "#9D473E", "target-arrow-color": "#9D473E", "line-style": "dashed", "width": 2.8 } },
+        { selector: "edge.edge-reference", style: { "line-color": "#788A70", "target-arrow-color": "#788A70", "line-style": "dotted" } },
+        { selector: "edge.edge-protection", style: { "line-color": "#536B55", "target-arrow-color": "#536B55" } },
+        { selector: "edge.edge-implementation", style: { "line-color": "#394C7B", "target-arrow-color": "#394C7B" } },
+        { selector: "node:selected", style: { "border-color": "#273A67", "border-width": 4, "background-blacken": -0.07 } },
+        { selector: "node.hovered", style: { "border-color": "#B76648", "border-width": 3, "z-index": 7 } },
+        { selector: "node.impact-node", style: { "background-color": "#E3EADF", "border-color": "#536B55", "border-width": 3, "z-index": 5 } },
+        { selector: "node.current-node", style: { "border-color": "#273A67", "border-width": 4, "z-index": 6 } },
+        { selector: "edge.impact-edge", style: { "line-color": "#B76648", "target-arrow-color": "#B76648", "width": 3.5, "opacity": 1, "z-index": 4 } },
         { selector: ".filtered-out", style: { "display": "none" } },
         { selector: ".faded", style: { "opacity": 0.18, "text-opacity": 0.22 } }
       ]
@@ -204,8 +245,12 @@ function GraphCanvas({ graphData, onSelectNode, onSelectEdge, graphRef, onReady 
     instance.on("mouseover", "node", (event) => {
       instance.elements().addClass("faded");
       event.target.closedNeighborhood().removeClass("faded");
+      event.target.addClass("hovered");
     });
-    instance.on("mouseout", () => instance.elements().removeClass("faded"));
+    instance.on("mouseout", "node", (event) => {
+      instance.elements().removeClass("faded");
+      event.target.removeClass("hovered");
+    });
 
     const resize = () => instance.resize();
     window.addEventListener("resize", resize);
@@ -292,10 +337,9 @@ export default function GraphPage() {
     const node = nodeMap.get(String(identifier));
     if (!node) return;
     const graph = graphRef.current;
+    applyImpactHighlight(graph, identifier, null, nodeMap);
     if (graph) {
-      graph.nodes().removeClass("impact-node current-node").unselect();
       const selected = graph.getElementById(String(identifier));
-      selected.select();
       graph.animate({ center: { eles: selected }, zoom: Math.max(graph.zoom(), 0.82) }, { duration: 250 });
     }
     setSelectedEdge(null);
@@ -304,19 +348,25 @@ export default function GraphPage() {
     if (node.kind !== "external_ref") {
       setDetailState({ loading: true, article: null, neighbors: [], impact: null, error: "" });
       api.article(node.id)
-        .then((response) => setDetailState({
-          loading: false,
-          article: response?.article || node,
-          neighbors: Array.isArray(response?.neighbors) ? response.neighbors : [],
-          impact: response?.impact || null,
-          error: ""
-        }))
+        .then((response) => {
+          const impact = response?.impact || null;
+          applyImpactHighlight(graphRef.current, identifier, impact, nodeMap);
+          setDetailState({
+            loading: false,
+            article: response?.article || node,
+            neighbors: Array.isArray(response?.neighbors) ? response.neighbors : [],
+            impact,
+            error: ""
+          });
+        })
         .catch((error) => setDetailState({ loading: false, article: node, neighbors: [], impact: null, error: getErrorMessage(error) }));
     } else {
       setDetailState({ loading: false, article: node, neighbors: [], impact: null, error: "" });
     }
   }, [nodeMap]);
   const onSelectEdge = useCallback((edge) => {
+    graphRef.current?.elements().removeClass("impact-node current-node impact-edge");
+    graphRef.current?.nodes().unselect();
     setSelectedNode(null);
     setSelectedEdge(edge);
     setDetailState({ loading: false, article: null, neighbors: [], impact: null, error: "" });
@@ -345,17 +395,9 @@ export default function GraphPage() {
     if (!graph) return;
     const visibleNodesInGraph = graph.nodes().filter((node) => !node.hasClass("filtered-out"));
     if (conflictLab && visibleNodesInGraph.length) {
-      visibleNodesInGraph.layout({
-        name: "cose", animate: false, fit: false, padding: 48,
-        nodeRepulsion: 115000, nodeOverlap: 54, idealEdgeLength: 220,
-        edgeElasticity: 90, componentSpacing: 190, gravity: 0.08, numIter: 1100
-      }).run();
+      visibleNodesInGraph.layout({ ...GRAPH_LAYOUT, fit: false }).run();
     } else if (!conflictLab && previousConflictLab.current) {
-      graph.layout({
-        name: "cose", animate: false, fit: false, padding: 48,
-        nodeRepulsion: 115000, nodeOverlap: 54, idealEdgeLength: 220,
-        edgeElasticity: 90, componentSpacing: 190, gravity: 0.08, numIter: 1100
-      }).run();
+      graph.layout({ ...GRAPH_LAYOUT, fit: false }).run();
     }
     if (visibleNodesInGraph.length) graph.fit(visibleNodesInGraph, 56);
     previousConflictLab.current = conflictLab;
@@ -383,13 +425,7 @@ export default function GraphPage() {
     try {
       const impact = await api.impact(selectedNode.id);
       setDetailState((current) => ({ ...current, impact }));
-      const graph = graphRef.current;
-      if (graph) {
-        const impactedIds = new Set((impact?.impacted_nodes || []).map((node) => String(node.id)));
-        graph.nodes().removeClass("impact-node current-node");
-        graph.getElementById(String(selectedNode.id)).addClass("current-node");
-        impactedIds.forEach((id) => graph.getElementById(id).addClass("impact-node"));
-      }
+      applyImpactHighlight(graphRef.current, selectedNode.id, impact, nodeMap);
     } catch (error) {
       setImpactError(getErrorMessage(error));
     } finally {
@@ -411,11 +447,7 @@ export default function GraphPage() {
   const resetGraph = () => {
     const graph = graphRef.current;
     if (!graph) return;
-    graph.layout({
-      name: "cose", animate: false, fit: true, padding: 48,
-      nodeRepulsion: 115000, nodeOverlap: 54, idealEdgeLength: 220,
-      edgeElasticity: 90, componentSpacing: 190, gravity: 0.08, numIter: 1100
-    }).run();
+    graph.layout({ ...GRAPH_LAYOUT, fit: true }).run();
     graph.nodes().unselect();
   };
 
@@ -483,8 +515,8 @@ export default function GraphPage() {
                 <div className="graph-main">
                   <GraphCanvas graphData={graphState.data} graphRef={graphRef} onReady={onReady} onSelectNode={onSelectNode} onSelectEdge={onSelectEdge} />
                   <div className="graph-legend">
-                    <span><i className="legend-node legend-active" />مادة سارية</span><span><i className="legend-node legend-amended" />معدّلة</span><span><i className="legend-node legend-repealed" />ملغاة</span>
-                    <span><i className="legend-line legend-repeal" />إلغاء</span><span><i className="legend-line legend-amendment" />تعديل</span><span><i className="legend-line legend-overlap" />تداخل</span>
+                    <span><i className="legend-node legend-active" />مادة سارية</span><span><i className="legend-node legend-amended" />معدّلة</span><span><i className="legend-node legend-repealed" />ملغاة</span><span><i className="legend-node legend-external" />مرجع خارجي</span>
+                    <span><i className="legend-line legend-repeal" />إلغاء</span><span><i className="legend-line legend-amendment" />تعديل</span><span><i className="legend-line legend-overlap" />تداخل</span><span><i className="legend-line legend-contradiction" />تعارض</span><span><i className="legend-line legend-reference" />إحالة</span>
                   </div>
                   <details className="graph-accessible-list">
                     <summary>استعراض المواد الظاهرة في قائمة قابلة للتنقل ({visibleNodes.length.toLocaleString("ar")})</summary>
@@ -499,8 +531,8 @@ export default function GraphPage() {
                       <RelationBadge relation={selectedEdge.relation_type} />
                       <p className="result-prose">{selectedEdge.note || "لا يوجد تفصيل إضافي للعلاقة."}</p>
                       <div className="mt-4 grid gap-3">
-                        <RelationshipArticleCard node={selectedEdgeSource} fallbackLabel={selectedEdge.source_label} role="المادة المصدر" />
-                        <RelationshipArticleCard node={selectedEdgeTarget} fallbackLabel={selectedEdge.target_label} role="المادة المرتبطة" />
+                        <RelationshipArticleCard node={selectedEdgeSource} fallbackLabel={selectedEdge.source_label} caption="المادة المصدر" />
+                        <RelationshipArticleCard node={selectedEdgeTarget} fallbackLabel={selectedEdge.target_label} caption="المادة المرتبطة" />
                       </div>
                     </div>
                   ) : !selectedNode ? (
@@ -511,7 +543,7 @@ export default function GraphPage() {
                         <div className="node-detail-heading"><p className="eyebrow">{article?.kind === "external_ref" ? "مرجع تشريعي مرتبط" : "بيانات المادة"}</p><StatusBadge status={article?.status} /></div>
                         <h2>{article?.article_number != null ? `المادة ${article.article_number}` : article?.label || "مرجع تشريعي"}</h2>
                         <h3>{article?.legislation_title || "تشريع غير محدد"}</h3>
-                        <div className="article-meta">{article?.legislation_type && <span>{legislationTypeLabel(article.legislation_type)}</span>}{article?.effective_date && <span><Icon name="calendar" size={15} />{article.effective_date}</span>}</div>
+                        <div className="article-meta">                        {article?.legislation_type && <span>{legislationTypeLabel(article.legislation_type)}</span>}{article?.effective_date && <span><Icon name="calendar" size={15} />{article.effective_date}</span>}<SimilarityBadge article={article} /></div>
                         {topicTags.length > 0 && <div className="tag-list">{topicTags.map((tag) => <span className="topic-tag" key={tag}>{tag}</span>)}</div>}
                         {detailState.error && <div className="inline-error" role="alert">{detailState.error}</div>}
                         {article?.text && <div className="legal-text node-legal-text" dir="rtl" lang="ar">{article.text}</div>}

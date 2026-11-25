@@ -1,7 +1,6 @@
 import { useState } from "react";
-import { useApp } from "../context/AppContext";
 import { api, getErrorMessage } from "../services/api";
-import { Button, EmptyState, Icon, LoadingState, PageHeader, Panel, StatusBadge } from "../components/common/UI";
+import { Button, EmptyState, Icon, LoadingState, OfficialSource, PageHeader, Panel, SimilarityBadge, StatusBadge } from "../components/common/UI";
 
 const contractSample = "يحق لصاحب العمل منفرداً تحويل عقد العامل الدائم إلى نظام العمل المرن وتخفيض أجره بما يتناسب مع ساعات العمل دون الحاجة لموافقة العامل الخطية.";
 const draftSample = "يلتزم صاحب العمل بتطبيق نظام العمل المرن على كافة العاملين دون الحاجة لموافقة خطية أو اتفاق مسبق.";
@@ -10,6 +9,7 @@ const statusInfo = {
   compliant: ["مطابق للقانون", "assessment-success"],
   non_compliant: ["مخالف / باطل قانوناً", "assessment-danger"],
   partial_conflict: ["يحتاج تعديل صياغي", "assessment-warning"],
+  insufficient_evidence: ["عدم كفاية الأدلة الموثقة للحكم", "assessment-neutral"],
   out_of_scope: ["خارج نطاق التشريعات المفهرسة", "assessment-neutral"]
 };
 
@@ -28,7 +28,6 @@ function textValue(value) {
 }
 
 export default function AuditPage() {
-  const { role } = useApp();
   const [mode, setMode] = useState("contract");
   const [text, setText] = useState("");
   const [result, setResult] = useState(null);
@@ -41,7 +40,7 @@ export default function AuditPage() {
     setState({ loading: true, error: "", copied: false });
     setResult(null);
     try {
-      setResult(await api.audit({ clause_text: clause, mode, role }));
+      setResult(await api.audit({ clause_text: clause, mode }));
       setState({ loading: false, error: "", copied: false });
     } catch (error) {
       setState({ loading: false, error: getErrorMessage(error), copied: false });
@@ -97,7 +96,7 @@ export default function AuditPage() {
             <div><p className="eyebrow">نتيجة المراجعة</p><h2>{result.status_label || fallbackLabel}</h2></div>
             <div className={`assessment-badge ${statusClass}`}><Icon name={rawStatus === "compliant" ? "check" : rawStatus === "non_compliant" ? "alert" : "shield"} size={19} /><span>{result.status_label || fallbackLabel}</span></div>
           </div>
-          <div className="assessment-meta"><span>النمط: {result.mode === "draft" ? "مسودة تشريع" : result.mode === "contract" ? "بند عقد / لائحة" : mode === "draft" ? "مسودة تشريع" : "بند عقد / لائحة"}</span><span>الدور: {role === "citizen" ? "مواطن" : role === "legislator" ? "مُشرّع" : "محامٍ"}</span>{result.risk_level && <span>مستوى المخاطر: {riskLabels[result.risk_level] || result.risk_level}</span>}</div>
+          <div className="assessment-meta"><span>النمط: {result.mode === "draft" ? "مسودة تشريع" : result.mode === "contract" ? "بند عقد / لائحة" : mode === "draft" ? "مسودة تشريع" : "بند عقد / لائحة"}</span>{result.risk_level && <span>مستوى المخاطر: {riskLabels[result.risk_level] || result.risk_level}</span>}</div>
           <section className="result-block assessment-summary"><h3>الخلاصة التنفيذية</h3><p>{textValue(result.summary) || "لم ترد خلاصة تنفيذية في نتيجة الخدمة."}</p></section>
           {violated.length > 0 && <section className="result-block"><h3>المواد المتعارضة أو المنتهكة</h3><div className="reference-list">{violated.map((item, index) => <article className="finding-card" key={index}><Icon name="alert" size={18} /><span>{typeof item === "string" ? item : item.legislation_title ? `${item.legislation_title} — المادة ${item.article_number ?? ""}` : item.text || item.label || JSON.stringify(item)}</span>{item?.status && <StatusBadge status={item.status} />}</article>)}</div></section>}
           <section className="result-block"><h3>التعليل القانوني</h3><p className="result-prose">{textValue(result.legal_reasoning) || "لم يرد تعليل قانوني في نتيجة الخدمة."}</p></section>
@@ -105,7 +104,11 @@ export default function AuditPage() {
           <section className="result-block"><div className="section-heading"><h3>المواد التشريعية المرجعية</h3><span className="count-pill">{references.length.toLocaleString("ar")}</span></div>
             {references.length ? <div className="reference-list">{references.map((article, index) => {
               const item = typeof article === "object" && article !== null ? article : {};
-              return <article className="reference-card" key={item.id || index}><div><strong>{item.legislation_title || item.title || "تشريع غير محدد"}</strong><span>المادة {item.article_number ?? "—"}</span></div><StatusBadge status={item.status} />{item.similarity != null && Number.isFinite(Number(item.similarity)) && <span className="similarity-score">درجة التطابق: {Number(item.similarity).toLocaleString("ar", { maximumFractionDigits: 3 })}</span>}</article>;
+              return <article className="reference-card" key={item.id || index}>
+                <div><strong>{item.legislation_title || item.title || "تشريع غير محدد"}</strong><span>المادة {item.article_number ?? "—"}</span></div>
+                <div className="reference-card-meta"><StatusBadge status={item.status} /><SimilarityBadge article={item} /></div>
+                <OfficialSource sourceUrl={item.source_url} sourceLabel={item.source_label} officialSource={item.official_source} />
+              </article>;
             })}</div> : <EmptyState title="لا توجد مواد مرجعية مرفقة" description="لم تُرجع الخدمة مواد مرجعية لهذا النص." />}
           </section>
         </Panel>

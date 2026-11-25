@@ -136,12 +136,40 @@ export function StatusBadge({ status }) {
   return <span className={`badge ${item?.className || "badge-neutral"}`}>{label}</span>;
 }
 
+function finiteScore(value) {
+  if ((typeof value !== "number" && typeof value !== "string") || (typeof value === "string" && !value.trim())) return null;
+  const score = Number(value);
+  return Number.isFinite(score) ? score : null;
+}
+
+export function SimilarityBadge({ article, className = "" }) {
+  const cosine = finiteScore(article?.cosine_similarity);
+  const fallback = finiteScore(article?.similarity);
+  if (article?.rank_status === "unranked" && (cosine ?? 0) === 0 && (fallback ?? 0) === 0) return null;
+  const score = cosine == null ? fallback : cosine;
+  if (score == null) return null;
+  const formatted = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 3,
+    maximumFractionDigits: 3,
+    useGrouping: false
+  }).format(score);
+  const explanation = `درجة التشابه الدلالي بين النصوص: ${formatted}. لا تمثل صحة الحكم القانوني أو درجة اليقين.`;
+
+  return (
+    <span className={`similarity-badge ${className}`.trim()} title={explanation} aria-label={explanation}>
+      <span>تشابه دلالي</span><bdi dir="ltr">{formatted}</bdi>
+    </span>
+  );
+}
+
 const relationMeta = {
   repeals: ["إلغاء تشريعي", "relation-repeal"],
   repealed_by: ["إلغاء تشريعي", "relation-repeal"],
   amends: ["تعديل", "relation-amendment"],
   amended_by: ["تعديل", "relation-amendment"],
   overlaps_with: ["تداخل / تقاطع أحكام", "relation-overlap"],
+  contradicts: ["تعارض تشريعي", "relation-contradiction"],
+  references: ["إحالة تشريعية", "relation-reference"],
   protects_over: ["حماية تشريعية", "relation-protection"],
   implements: ["تنفيذ تشريعي", "relation-implementation"],
   details_or_links: ["ارتباط تنظيمي", "relation-links"]

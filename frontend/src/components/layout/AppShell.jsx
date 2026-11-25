@@ -14,7 +14,7 @@ const pageTitles = {
 };
 
 export default function AppShell() {
-  const { role, setRole, health } = useApp();
+  const { health } = useApp();
   const [articleIdentifier, setArticleIdentifier] = useState(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const location = useLocation();
@@ -33,11 +33,7 @@ export default function AppShell() {
         {mobileMenuOpen && <button className="mobile-backdrop" aria-label="إغلاق القائمة" onClick={closeMobileMenu} />}
         <aside className={`sidebar${mobileMenuOpen ? " sidebar-open" : ""}`}>
           <Link className="brand" to="/" onClick={closeMobileMenu}>
-            <img
-              src="/assets/maeyar-logo.png"
-              alt="معيار - Ma'yar"
-              style={{ width: "100%", maxWidth: "240px", height: "auto", objectFit: "contain" }}
-            />
+            <img src="/assets/maeyar-logo.png" alt="معيار - Ma'yar" />
           </Link>
           <div className="nav-caption">مساحة العمل</div>
           <nav className="main-nav" aria-label="التنقل الرئيسي">

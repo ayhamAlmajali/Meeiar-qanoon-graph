@@ -2,32 +2,10 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { api } from "../services/api";
 
 const AppContext = createContext(null);
-const ROLE_STORAGE_KEY = "meeiar-role";
-const ROLES = new Set(["citizen", "lawyer", "legislator"]);
-
-function readStoredRole() {
-  try {
-    const value = window.localStorage.getItem(ROLE_STORAGE_KEY);
-    return ROLES.has(value) ? value : "lawyer";
-  } catch {
-    return "lawyer";
-  }
-}
 
 export function AppProvider({ children }) {
-  const [role, setRoleState] = useState(readStoredRole);
   const [health, setHealth] = useState({ status: "checking", checkedAt: null });
   const [refreshVersion, setRefreshVersion] = useState(0);
-
-  const setRole = useCallback((nextRole) => {
-    if (!ROLES.has(nextRole)) return;
-    setRoleState(nextRole);
-    try {
-      window.localStorage.setItem(ROLE_STORAGE_KEY, nextRole);
-    } catch (error) {
-      console.warn("Could not persist Meeiar role preference:", error);
-    }
-  }, []);
 
   const refreshData = useCallback(() => setRefreshVersion((value) => value + 1), []);
 
@@ -62,8 +40,8 @@ export function AppProvider({ children }) {
   }, [refreshVersion]);
 
   const value = useMemo(
-    () => ({ role, setRole, health, refreshData, refreshVersion }),
-    [role, setRole, health, refreshData, refreshVersion]
+    () => ({ health, refreshData, refreshVersion }),
+    [health, refreshData, refreshVersion]
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

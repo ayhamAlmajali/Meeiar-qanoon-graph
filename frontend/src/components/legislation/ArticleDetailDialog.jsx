@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, getErrorMessage } from "../../services/api";
-import { Button, EmptyState, legislationTypeLabel, LoadingState, OfficialSource, RelationBadge, StatusBadge } from "../common/UI";
+import { Button, EmptyState, legislationTypeLabel, LoadingState, OfficialSource, RelationBadge, SimilarityBadge, StatusBadge } from "../common/UI";
 
 function topicList(tags) {
   if (Array.isArray(tags)) return tags.filter(Boolean);
@@ -56,6 +56,7 @@ export default function ArticleDetailDialog({ identifier, onClose, onOpenArticle
                     {article.legislation_type && <span>{legislationTypeLabel(article.legislation_type)}</span>}
                     <StatusBadge status={article.status} />
                     {article.effective_date && <span><bdi dir="ltr">{article.effective_date}</bdi></span>}
+                    <SimilarityBadge article={article} />
                   </div>
                   {topicList(article.topic_tags).length > 0 && (
                     <div className="tag-list">{topicList(article.topic_tags).map((tag) => <span className="topic-tag" key={tag}>{tag}</span>)}</div>
