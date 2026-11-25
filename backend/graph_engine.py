@@ -342,19 +342,34 @@ class QanoonGraphEngine:
                 overlaps.append(edge)
         return {"repeals": repeals, "amendments": amendments, "overlaps": overlaps}
 
-    def analyze_legal_question(self, question: str) -> dict[str, Any]:
-        matched_articles = self.search_articles(question, min_score=4.5)[:6]
-        if not matched_articles:
+    def analyze_legal_question(self, question: str, role: str = "lawyer") -> dict[str, Any]:
+        candidates = self.search_articles(question, min_score=4.0)[:10]
+        if not candidates:
+            candidates = self.search_articles(question, min_score=2.0)[:6]
+
+        if not candidates:
             return {
                 "question": question,
-                "engine_mode": "out_of_scope",
+                "role": role,
+                "engine_mode": "insufficient_evidence",
                 "has_conflict_or_overlap": False,
                 "verdict": (
-                    "لا تتوفر في قاعدة البيانات التشريعية الحالية مواد قانونية ذات صلة كافية للإجابة على هذا الاستفسار."
+                    "لم يتم العثور على مواد مطابقة بدرجة ثقة كافية في الفهرس الحالي للإجابة على هذا الاستفسار. "
+                    "عدم وجود تطابق نصي مباشر في القاعدة الحالية لا يعني بالضرورة خروج الموضوع عن التشريع الأردني، "
+                    "بل يستدعي صياغة السؤال بمصطلحات تشريعية أدق أو إضافة الوثيقة المختصة."
                 ),
                 "evidence_articles": [],
+                "sources": [],
                 "detected_relations": [],
             }
+
+        try:
+            from reranker import rerank_articles as _rr_fn
+            reranked_pairs = _rr_fn(question, candidates, top_k=6)
+            filtered_pairs = [(a, sc) for a, sc in reranked_pairs if sc >= 0.25]
+            matched_articles = [a for a, _ in (filtered_pairs or reranked_pairs[:3])]
+        except Exception:
+            matched_articles = candidates[:6]
 
         related_edges = []
         seen_edges = set()
@@ -370,7 +385,7 @@ class QanoonGraphEngine:
             if any(tag in e["relation_type"] for tag in ["overlaps_with", "repeals", "amends"])
         ]
 
-        llm_answer, engine_mode = self._try_llm_synthesis(question, matched_articles, conflicts)
+        llm_answer, engine_mode = self._try_llm_synthesis(question, matched_articles, conflicts, role=role)
         verdict = llm_answer or self._rule_based_synthesis(question, matched_articles, conflicts)
 
         enriched_evidence = [enrich_article_with_source(a) for a in matched_articles]
@@ -428,7 +443,17 @@ class QanoonGraphEngine:
         question: str,
         articles: list[dict[str, Any]],
         conflicts: list[dict[str, Any]],
+        role: str = "lawyer",
     ) -> tuple[str | None, str]:
+        role_guidance = (
+            "خاطب المواطن بلغة عربية واضحة ومبسطة تركز على حقوقه والتزاماته العملية."
+            if role == "citizen"
+            else (
+                "خاطب المشرّع وصانع القرار بلغة مؤسسية تركز على الاتساق التشريعي وأثر التعديل أو الإلغاء."
+                if role == "legislator"
+                else "خاطب المحامي والمختص بلغة قانونية دقيقة مع ذكر أرقام المواد وأسماء التشريعات."
+            )
+        )
         _load_env_if_present()
 
         context_blocks = [
@@ -441,7 +466,8 @@ class QanoonGraphEngine:
         ]
 
         system_prompt = (
-            "أنت مستشار تحليل تشريعي أردني في منصة (معيار)، وجميع التشريعات والقرارات في قاعدة البيانات هي تشريعات أردنية صادرة في المملكة الأردنية الهاشمية؛ لا تنسب أي تشريع إلى دولة أخرى. "
+            f"أنت مستشار تحليل تشريعي أردني في منصة (معيار). {role_guidance} "
+            "وجميع التشريعات والقرارات في قاعدة البيانات هي تشريعات أردنية صادرة في المملكة الأردنية الهاشمية؛ لا تنسب أي تشريع إلى دولة أخرى. "
             "أجب باللغة العربية الفصحى الواضحة والمنظمة معتمداً حصراً على المواد والعلاقات المرفقة.\n"
             "قواعد صارمة جداً:\n"
             "- استخرج واشرح جميع الأحكام والحقوق والالتزامات الواردة في النصوص المرفقة والمتعلقة بموضوع السؤال بوضوح وتفصيل (حتى لو صاغ المستخدم سؤاله بعبارة عامة مثل 'قانون كذا' بدلاً من اسم التشريع الحرفي).\n"

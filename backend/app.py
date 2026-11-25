@@ -3,7 +3,8 @@ from pathlib import Path
 import tempfile
 from typing import Any, Literal
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+import hmac
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -61,6 +62,70 @@ def get_engine() -> QanoonGraphEngine:
         _ENGINE_CACHE["engine"] = QanoonGraphEngine(load_legislations())
         _ENGINE_CACHE["mtime"] = mtime
     return _ENGINE_CACHE["engine"]
+
+
+
+def verify_admin_access(x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")) -> None:
+    expected_key = os.environ.get("ADMIN_API_KEY", "").strip()
+    require_key = os.environ.get("REQUIRE_ADMIN_KEY", "false").strip().lower() in {"1", "true", "yes"}
+    if not expected_key:
+        if require_key:
+            raise HTTPException(
+                status_code=503,
+                detail="مسارات التعديل مغلقة: لم يتم تهيئة ADMIN_API_KEY على الخادم.",
+            )
+        return
+    if not x_admin_key or not hmac.compare_digest(x_admin_key.strip(), expected_key):
+        raise HTTPException(status_code=401, detail="غير مصرح بتنفيذ عمليات تعديل البيانات (X-Admin-Key غير صالح).")
+
+
+def _validate_audit_llm_output(parsed: Any, referenced: list[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(parsed, dict):
+        raise ValueError("استجابة النموذج ليست كائن JSON صالح.")
+
+    allowed_statuses = {"compliant", "non_compliant", "partial_conflict", "insufficient_evidence", "out_of_scope"}
+    raw_status = str(parsed.get("compliance_status") or "").strip()
+    status = raw_status if raw_status in allowed_statuses else "partial_conflict"
+
+    allowed_risks = {"low", "medium", "high", "unknown"}
+    raw_risk = str(parsed.get("risk_level") or "").strip().lower()
+    risk = raw_risk if raw_risk in allowed_risks else ("unknown" if status in {"insufficient_evidence", "out_of_scope"} else "medium")
+
+    raw_violated = parsed.get("violated_articles")
+    if isinstance(raw_violated, list):
+        violated = [str(item).strip() for item in raw_violated if str(item).strip()]
+    elif isinstance(raw_violated, str) and raw_violated.strip():
+        violated = [raw_violated.strip()]
+    else:
+        violated = []
+
+    summary = str(parsed.get("summary") or "").strip()
+    reasoning = str(parsed.get("legal_reasoning") or "").strip()
+    if not summary and not reasoning:
+        raise ValueError("استجابة النموذج تفتقر إلى الخلاصة والتعليل القانوني.")
+
+    default_labels = {
+        "compliant": "مطابق للقانون",
+        "non_compliant": "مخالف / باطل قانوناً",
+        "partial_conflict": "يحتاج مراجعة أو تعديل صياغي",
+        "insufficient_evidence": "عدم كفاية النصوص المفهرسة للحكم",
+        "out_of_scope": "خارج نطاق التشريعات المفهرسة",
+    }
+    status_label = str(parsed.get("status_label") or "").strip() or default_labels[status]
+    rewrite = str(parsed.get("suggested_rewrite") or "").strip()
+    if status in {"compliant", "insufficient_evidence", "out_of_scope"}:
+        rewrite = ""
+
+    return {
+        "compliance_status": status,
+        "status_label": status_label,
+        "risk_level": risk,
+        "summary": summary or reasoning[:240],
+        "violated_articles": violated if status not in {"insufficient_evidence", "out_of_scope"} else [],
+        "legal_reasoning": reasoning or summary,
+        "suggested_rewrite": rewrite,
+        "referenced_articles": referenced if status not in {"insufficient_evidence", "out_of_scope"} else [],
+    }
 
 
 def _role_style_note(role: RoleType) -> str:
@@ -149,7 +214,7 @@ def ask_conflict(payload: AskRequest) -> dict:
     question = payload.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="يرجى إدخال سؤال قانوني")
-    result = get_engine().analyze_legal_question(question)
+    result = get_engine().analyze_legal_question(question, role=payload.role)
     if isinstance(result, dict):
         result["role"] = payload.role
     return result
@@ -163,17 +228,22 @@ def audit_clause_or_draft(payload: AuditRequest) -> dict[str, Any]:
 
     engine = get_engine()
     candidate_articles = engine.search_articles(clause, min_score=3.5)[:10]
+    if not candidate_articles:
+        candidate_articles = engine.search_articles(clause, min_score=2.0)[:6]
 
     if not candidate_articles:
         return {
             "mode": payload.mode,
             "role": payload.role,
-            "compliance_status": "out_of_scope",
-            "status_label": "خارج نطاق التشريعات المفهرسة",
+            "compliance_status": "insufficient_evidence",
+            "status_label": "لم يُعثر على مواد مطابقة في الفهرس الحالي",
             "risk_level": "unknown",
-            "summary": "لا تتضمن قاعدة التشريعات المفهرسة حالياً نصوصاً صريحة تحكم موضوع هذا البند.",
+            "summary": "لم تُظهر نتائج البحث في النصوص المفهرسة حالياً مواد مطابقة بدرجة كافية لتدقيق هذا البند.",
             "violated_articles": [],
-            "legal_reasoning": "تجنباً لأي اجتهاد غير مستند لنص، لم يتم إصدار حكم امتثال لعدم توفر مادة مرجعية مطابقة.",
+            "legal_reasoning": (
+                "عدم العثور على تطابق نصي مباشر في الفهرس الحالي لا يُعدّ دليلاً قاطعاً على خروج الموضوع عن التشريع الأردني، "
+                "لذلك لم يُصدر حكم امتثال آلي تجنباً لأي استنتاج غير مستند لنص."
+            ),
             "suggested_rewrite": "",
             "referenced_articles": [],
         }
@@ -181,7 +251,11 @@ def audit_clause_or_draft(payload: AuditRequest) -> dict[str, Any]:
     if rerank_articles is not None:
         reranked = rerank_articles(clause, candidate_articles, top_k=5)
     else:
-        reranked = [(art, 0.85) for art in candidate_articles[:5]]
+        reranked = [
+            (art, round(max(0.20, 0.70 - idx * 0.08), 4))
+            for idx, art in enumerate(candidate_articles[:5])
+        ]
+    reranked = [(art, sc) for art, sc in reranked if sc >= 0.25] or reranked[:2]
 
     context_blocks = []
     referenced = []
@@ -239,31 +313,25 @@ def audit_clause_or_draft(payload: AuditRequest) -> dict[str, Any]:
 
     try:
         parsed = generate_json(prompt, temperature=0.1)
+        validated = _validate_audit_llm_output(parsed, referenced)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"فشل التحليل عبر النموذج: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"فشل التحليل أو التحقق من استجابة النموذج: {exc}") from exc
 
     return {
         "mode": payload.mode,
         "role": payload.role,
-        "compliance_status": parsed.get("compliance_status", "partial_conflict"),
-        "status_label": parsed.get("status_label", "يحتاج مراجعة قانونية"),
-        "risk_level": parsed.get("risk_level", "medium"),
-        "summary": parsed.get("summary", ""),
-        "violated_articles": parsed.get("violated_articles", []),
-        "legal_reasoning": parsed.get("legal_reasoning", ""),
-        "suggested_rewrite": parsed.get("suggested_rewrite", ""),
-        "referenced_articles": referenced if parsed.get("compliance_status") != "out_of_scope" else [],
+        **validated,
     }
 
 
-@app.post("/ingest/text")
+@app.post("/ingest/text", dependencies=[Depends(verify_admin_access)])
 def ingest_raw_text(payload: IngestTextRequest) -> dict:
     if not payload.raw_text.strip():
         raise HTTPException(status_code=400, detail="النص التشريعي فارغ")
     return ingest_document(payload.raw_text, payload.source_name.strip() or "مستند تشريعي مضاف")
 
 
-@app.post("/ingest/file")
+@app.post("/ingest/file", dependencies=[Depends(verify_admin_access)])
 async def ingest_uploaded_file(file: UploadFile = File(...)) -> dict:
     suffix = Path(file.filename or "document.txt").suffix
     content = await file.read()
@@ -281,7 +349,7 @@ async def ingest_uploaded_file(file: UploadFile = File(...)) -> dict:
         tmp_path.unlink(missing_ok=True)
 
 
-@app.post("/embeddings/rebuild")
+@app.post("/embeddings/rebuild", dependencies=[Depends(verify_admin_access)])
 def rebuild_embeddings_endpoint() -> dict:
     total = rebuild_all_embeddings()
     return {"status": "ok", "embedded_articles": total}
