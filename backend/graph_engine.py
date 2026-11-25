@@ -365,7 +365,7 @@ class QanoonGraphEngine:
                         sim_lookup = {
                             emb_ids[i]: float(sims[i])
                             for i in range(len(emb_ids))
-                            if sims[i] > 0.55
+                            if sims[i] > 0.42
                         }
             except Exception:
                 sim_lookup = {}
