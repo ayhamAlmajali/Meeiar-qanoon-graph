@@ -1,3 +1,4 @@
+from urllib.parse import quote
 from collections import defaultdict, deque
 import json
 import os
@@ -75,6 +76,80 @@ def load_legislations(json_path: str = "data/legislations.json") -> list[dict[st
         return []
     data = json.loads(resolved.read_text(encoding="utf-8"))
     return data.get("articles", [])
+
+
+
+REPO_BLOB_BASE = os.environ.get(
+    "SOURCE_REPO_BASE_URL",
+    "https://github.com/ayhamAlmajali/qanoon-graph/blob/main/",
+).rstrip("/") + "/"
+
+
+def _norm_source_token(value: str) -> str:
+    s = str(value or "").lower()
+    for ch in ("أ", "إ", "آ"):
+        s = s.replace(ch, "ا")
+    s = s.replace("ى", "ي").replace("ة", "ه")
+    s = re.sub(r"[ـ_\-]+", " ", s)
+    s = re.sub(r"[^\w\s.]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _discover_repo_source_files() -> list[str]:
+    found: list[str] = []
+    for rel_dir in ("data/raw_pdfs", "data/inbox_docs"):
+        d = PROJECT_ROOT / rel_dir
+        if d.exists():
+            for f in sorted(d.iterdir()):
+                if f.is_file():
+                    found.append(f"{rel_dir}/{f.name}")
+    return found
+
+
+def resolve_article_source(article: dict[str, Any]) -> dict[str, str | None]:
+    raw = str(article.get("official_source") or "").strip()
+    title = str(article.get("legislation_title") or "").strip()
+    if not raw and not title:
+        return {"source_label": None, "source_url": None}
+
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return {"source_label": raw, "source_url": raw}
+
+    m = re.search(r"((?:data/(?:raw_pdfs|inbox_docs)/[^\s]+))", raw)
+    if m:
+        rel_path = m.group(1).lstrip("./")
+        encoded = "/".join(quote(part) for part in rel_path.split("/"))
+        return {"source_label": raw, "source_url": f"{REPO_BLOB_BASE}{encoded}"}
+
+    cleaned = re.sub(r"^ملف\s*pdf\s*:\s*", "", raw, flags=re.IGNORECASE).strip()
+    norm_raw = _norm_source_token(cleaned)
+    norm_title = _norm_source_token(title)
+    repo_files = _discover_repo_source_files()
+
+    for rel_path in repo_files:
+        fname = Path(rel_path).name
+        stem = Path(rel_path).stem
+        norm_stem = _norm_source_token(stem)
+        if (
+            (norm_raw and (norm_stem in norm_raw or norm_raw in norm_stem))
+            or ("المرن" in norm_title and "44" in fname)
+            or ("10 لسنه 2023" in norm_title and "2023" in fname)
+            or ("قانون العمل" in norm_title and "1996" in fname)
+        ):
+            encoded = "/".join(quote(part) for part in rel_path.split("/"))
+            return {"source_label": cleaned or fname, "source_url": f"{REPO_BLOB_BASE}{encoded}"}
+
+    return {"source_label": cleaned or title or None, "source_url": None}
+
+
+def enrich_article_with_source(article: dict[str, Any]) -> dict[str, Any]:
+    item = dict(article)
+    src_info = resolve_article_source(item)
+    if src_info.get("source_label") and not item.get("source_label"):
+        item["source_label"] = src_info["source_label"]
+    if src_info.get("source_url") and not item.get("source_url"):
+        item["source_url"] = src_info["source_url"]
+    return item
 
 
 class QanoonGraphEngine:
@@ -298,12 +373,28 @@ class QanoonGraphEngine:
         llm_answer, engine_mode = self._try_llm_synthesis(question, matched_articles, conflicts)
         verdict = llm_answer or self._rule_based_synthesis(question, matched_articles, conflicts)
 
+        enriched_evidence = [enrich_article_with_source(a) for a in matched_articles]
+        unique_sources: list[dict[str, str | None]] = []
+        seen_src: set[str] = set()
+        for a in enriched_evidence:
+            s_url = a.get("source_url")
+            s_lbl = a.get("source_label") or a.get("official_source")
+            key = str(s_url or s_lbl or "").strip()
+            if key and key not in seen_src:
+                seen_src.add(key)
+                unique_sources.append({
+                    "label": s_lbl,
+                    "url": s_url,
+                    "legislation_title": a.get("legislation_title"),
+                })
+
         return {
             "question": question,
             "engine_mode": engine_mode,
             "has_conflict_or_overlap": len(conflicts) > 0,
             "verdict": verdict,
-            "evidence_articles": matched_articles,
+            "evidence_articles": enriched_evidence,
+            "sources": unique_sources,
             "detected_relations": conflicts or related_edges,
         }
 
@@ -463,4 +554,134 @@ class QanoonGraphEngine:
             "total_edges": len(self.edges),
             "returned_nodes": len(capped),
             "returned_edges": len(filtered_edges),
+        }
+
+    def get_legislation_evolution(
+        self,
+        legislation_title: str | None = None,
+        article_number: str | None = None,
+    ) -> dict[str, Any]:
+        counts: dict[str, int] = {}
+        for art in self.articles:
+            t = str(art.get("legislation_title") or "").strip()
+            if t:
+                counts[t] = counts.get(t, 0) + 1
+
+        available = [
+            {"legislation_title": t, "article_count": c}
+            for t, c in sorted(counts.items(), key=lambda x: (-x[1], x[0]))
+        ]
+        if not available:
+            return {"selected_legislation": None, "available_legislations": [], "stages": []}
+
+        chosen = (legislation_title or "").strip()
+        if not chosen or chosen not in counts:
+            if chosen:
+                matches = [t for t in counts if chosen in t]
+                chosen = matches[0] if matches else available[0]["legislation_title"]
+            else:
+                chosen = available[0]["legislation_title"]
+
+        by_id = {a.get("id"): a for a in self.articles if a.get("id")}
+        main_arts = [
+            a for a in self.articles
+            if str(a.get("legislation_title") or "").strip() == chosen
+        ]
+        if article_number and article_number.strip():
+            num_q = article_number.strip()
+            filtered_num = [a for a in main_arts if str(a.get("article_number") or "").strip() == num_q]
+            if filtered_num:
+                main_arts = filtered_num
+
+        main_ids = {a.get("id") for a in main_arts if a.get("id")}
+        stages: list[dict[str, Any]] = []
+
+        # 1) محطات نفاذ التشريع المختار وعلاقاته الصادرة (تعديل / إلغاء / تداخل)
+        for art in main_arts:
+            enriched = enrich_article_with_source(art)
+            rels = [
+                r for r in (art.get("relations") or [])
+                if isinstance(r, dict) and r.get("relation_type") in {"repeals", "amends", "overlaps_with", "repealed_by", "amended_by"}
+            ]
+            if rels:
+                for rel in rels:
+                    target = by_id.get(rel.get("target_ref"))
+                    stages.append({
+                        "date": str(art.get("effective_date") or "غير محدد"),
+                        "change_type": rel.get("relation_type"),
+                        "article_id": art.get("id"),
+                        "article_number": art.get("article_number"),
+                        "legislation_title": chosen,
+                        "status": art.get("status", "ساري"),
+                        "before_or_related_ref": (
+                            f"{target.get('legislation_title')} - مادة ({target.get('article_number')})"
+                            if target else str(rel.get("target_ref") or "")
+                        ),
+                        "before_text": target.get("text", "") if target else "",
+                        "current_text": art.get("text", ""),
+                        "note": rel.get("note", ""),
+                        "source_label": enriched.get("source_label"),
+                        "source_url": enriched.get("source_url"),
+                    })
+
+        # 2) محطات لاحقة من تشريعات أخرى عدّلت أو ألغت أو تداخلت مع هذا التشريع
+        for other in self.articles:
+            if str(other.get("legislation_title") or "").strip() == chosen:
+                continue
+            enriched_other = enrich_article_with_source(other)
+            for rel in (other.get("relations") or []):
+                if not isinstance(rel, dict):
+                    continue
+                if rel.get("relation_type") not in {"repeals", "amends", "overlaps_with", "repealed_by", "amended_by"}:
+                    continue
+                if rel.get("target_ref") in main_ids:
+                    target = by_id.get(rel.get("target_ref"))
+                    stages.append({
+                        "date": str(other.get("effective_date") or "غير محدد"),
+                        "change_type": rel.get("relation_type", "amends"),
+                        "article_id": other.get("id"),
+                        "article_number": other.get("article_number"),
+                        "legislation_title": other.get("legislation_title"),
+                        "status": other.get("status", "ساري"),
+                        "before_or_related_ref": (
+                            f"{target.get('legislation_title')} - مادة ({target.get('article_number')})"
+                            if target else chosen
+                        ),
+                        "before_text": target.get("text", "") if target else "",
+                        "current_text": other.get("text", ""),
+                        "note": rel.get("note", ""),
+                        "source_label": enriched_other.get("source_label"),
+                        "source_url": enriched_other.get("source_url"),
+                    })
+
+        # 3) إذا لم تُسجّل علاقات تعديل صريحة، نعرض محطات النفاذ الأساسية للمواد مرتبة زمنياً
+        if not stages:
+            sorted_main = sorted(
+                main_arts,
+                key=lambda a: (str(a.get("effective_date") or "9999"), str(a.get("article_number") or "")),
+            )
+            for art in sorted_main[:25]:
+                enriched = enrich_article_with_source(art)
+                stages.append({
+                    "date": str(art.get("effective_date") or "غير محدد"),
+                    "change_type": "enacted",
+                    "article_id": art.get("id"),
+                    "article_number": art.get("article_number"),
+                    "legislation_title": chosen,
+                    "status": art.get("status", "ساري"),
+                    "before_or_related_ref": "",
+                    "before_text": "",
+                    "current_text": art.get("text", ""),
+                    "note": "نص تشريعي مسجل حسب تاريخ النفاذ.",
+                    "source_label": enriched.get("source_label"),
+                    "source_url": enriched.get("source_url"),
+                })
+
+        stages.sort(key=lambda s: str(s.get("date") or "9999"))
+        return {
+            "selected_legislation": chosen,
+            "article_filter": article_number,
+            "total_stages": len(stages),
+            "available_legislations": available,
+            "stages": stages,
         }

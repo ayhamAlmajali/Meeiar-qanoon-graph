@@ -12,7 +12,7 @@ from ai_ingest import (
     ingest_document,
     rebuild_all_embeddings,
 )
-from graph_engine import PROJECT_ROOT, QanoonGraphEngine, load_legislations
+from graph_engine import PROJECT_ROOT, QanoonGraphEngine, enrich_article_with_source, load_legislations
 from llm_client import generate_json
 
 try:
@@ -113,9 +113,22 @@ def impact(node_id: str) -> dict:
     return get_engine().trace_impact_chain(node_id)
 
 
+@app.get("/timeline/evolution")
+def timeline_evolution(
+    legislation_title: str | None = None,
+    article_number: str | None = None,
+) -> dict:
+    clean_title = legislation_title if isinstance(legislation_title, str) else None
+    clean_article = article_number if isinstance(article_number, str) else None
+    return get_engine().get_legislation_evolution(
+        legislation_title=clean_title,
+        article_number=clean_article,
+    )
+
+
 @app.get("/articles")
 def articles(q: str = Query(default="")) -> list[dict]:
-    return get_engine().search_articles(q)
+    return [enrich_article_with_source(a) for a in get_engine().search_articles(q)]
 
 
 @app.get("/articles/{identifier}")
@@ -125,7 +138,7 @@ def article_detail(identifier: str) -> dict:
     if not art:
         raise HTTPException(status_code=404, detail="المادة غير موجودة")
     return {
-        "article": art,
+        "article": enrich_article_with_source(art),
         "neighbors": engine.adjacency.get(art["id"], []),
         "impact": engine.trace_impact_chain(art["id"]),
     }
@@ -181,12 +194,15 @@ def audit_clause_or_draft(payload: AuditRequest) -> dict[str, Any]:
             f"- [{art.get('legislation_title')} | مادة {art.get('article_number')} | الحالة: {art.get('status', 'ساري')} | دقة التطابق: {score}]: "
             f"{art.get('text')}\n  العلاقات في الرسم البياني: {rel_notes or 'لا يوجد'}"
         )
+        enriched_art = enrich_article_with_source(art)
         referenced.append({
             "id": art["id"],
             "legislation_title": art.get("legislation_title"),
             "article_number": art.get("article_number"),
             "status": art.get("status", "ساري"),
             "similarity": score,
+            "source_label": enriched_art.get("source_label"),
+            "source_url": enriched_art.get("source_url"),
         })
 
     role_instruction = (
