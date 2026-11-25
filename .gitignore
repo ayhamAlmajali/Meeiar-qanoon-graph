@@ -1,21 +1,37 @@
-backups/
-data/*.before_*.json
-_trash_review/
+﻿# Python / Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Backups, Archives & Temporary Dumps
+*.bak
+*.rar
+*.zip
+*.7z
+audit_dump.txt
+
+# Data & Large PDFs
+data/new_data/
+data/extracted_md/
+!data/legislations.json
+!data/embeddings_index.json
+!data/ingested_files.json
+
+# Environment & OS
 .env
 .env.*
 !.env.example
-frontend/.env
-frontend/.env.*
-!frontend/.env.example
-.venv/
-venv/
-__pycache__/
-*.pyc
-node_modules/
+Thumbs.db
+Desktop.ini
+
+# Frontend build & dependencies
 frontend/node_modules/
 frontend/dist/
-.DS_Store
-Thumbs.db
 
+# Local backups
 backups/
-data/new_data/

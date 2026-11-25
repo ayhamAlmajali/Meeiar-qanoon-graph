@@ -54,18 +54,19 @@ def _get_cached_embeddings() -> tuple[list[str], Any]:
 
 
 def _load_env_if_present() -> None:
-    env_path = PROJECT_ROOT / ".env"
-    if not env_path.exists():
-        return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    backend_dir = Path(__file__).resolve().parent
+    for env_path in (PROJECT_ROOT / ".env", backend_dir / ".env"):
+        if not env_path.exists():
             continue
-        k, v = line.split("=", 1)
-        k = k.strip()
-        v = v.strip().strip('"').strip("'")
-        if k and k not in os.environ:
-            os.environ[k] = v
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip().strip('"').strip("'")
+            if k and (k not in os.environ or not os.environ[k].strip()):
+                os.environ[k] = v
 
 
 def normalize_text(text: str) -> str:
@@ -173,7 +174,6 @@ def resolve_article_source(article: dict[str, Any]) -> dict[str, str | None]:
 
     repo_files, manifest = _get_cached_repo_sources()
 
-    # التحقق أولاً من سجل المصادر الرسمية المسحوبة (sources_manifest.json)
     cleaned = re.sub(r"^ملف\s*pdf\s*:\s*", "", raw, flags=re.IGNORECASE).strip()
     base_name = Path(cleaned).name if cleaned else ""
     if base_name and base_name in manifest:
@@ -328,18 +328,15 @@ class QanoonGraphEngine:
 
     def get_article_by_id_or_number(self, identifier: str) -> dict[str, Any] | None:
         clean = unicodedata.normalize("NFKC", identifier).translate(ARABIC_TO_WESTERN_DIGITS).strip()
-        # 1) المطابقة الدقيقة بالمعرف الفريد أولاً
         for art in self.articles:
             if art["id"] == clean:
                 return art
-        # 2) مطابقة بصيغة canonical_law_id:article_number إن وُجدت
         if ":" in clean:
             law_part, num_part = clean.split(":", 1)
             for art in self.articles:
                 num = unicodedata.normalize("NFKC", str(art.get("article_number", ""))).translate(ARABIC_TO_WESTERN_DIGITS).strip()
                 if num == num_part.strip() and law_part.strip() in str(art.get("canonical_law_id", "")):
                     return art
-        # 3) الرجوع لرقم المادة عند عدم وجود معرف مطابق
         for art in self.articles:
             num = unicodedata.normalize("NFKC", str(art.get("article_number", ""))).translate(ARABIC_TO_WESTERN_DIGITS).strip()
             if num == clean:
@@ -417,7 +414,6 @@ class QanoonGraphEngine:
         impact_paths = []
         potentially_outdated_regulations = []
 
-        # الاتجاهات ذات الأثر التشريعي الفعلي فقط (تعديل/إلغاء/تعارض صادر، أو تشريعات فرعية صادرة بمقتضى المادة)
         propagating_types = {
             "amends",
             "repeals",
@@ -658,10 +654,49 @@ class QanoonGraphEngine:
             + ("\n".join(rel_blocks) if rel_blocks else "لا توجد علاقات إضافية مسجلة.")
         )
 
-        # 1. Local Ollama
-        ollama_url = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
-        ollama_model = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
-        try:
+        provider = os.environ.get("LLM_PROVIDER", "groq").strip().lower()
+        groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+        groq_model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+        ollama_url = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/chat").strip()
+        ollama_model = (
+            os.environ.get("OLLAMA_MODEL", "").strip()
+            or os.environ.get("OLLAMA_CHAT_MODEL", "").strip()
+            or "qwen2.5:7b"
+        )
+
+        if provider == "none":
+            return None, "graph_semantic_reasoning"
+
+        def _try_groq() -> tuple[str, str] | None:
+            if not groq_key:
+                return None
+            payload = json.dumps({
+                "model": groq_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.1,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "https://api.groq.com/openai/v1/chat/completions",
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {groq_key}",
+                    "User-Agent": "Mozilla/5.0",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                answer = (data["choices"][0]["message"]["content"] or "").strip()
+                if answer:
+                    return answer, f"groq:{groq_model}"
+            return None
+
+        def _try_ollama() -> tuple[str, str] | None:
+            timeout_sec = int(os.environ.get("OLLAMA_TIMEOUT_SECONDS", "15"))
             payload = json.dumps({
                 "model": ollama_model,
                 "messages": [
@@ -677,43 +712,45 @@ class QanoonGraphEngine:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 answer = (data.get("message", {}).get("content") or "").strip()
                 if answer:
                     return answer, f"ollama:{ollama_model}"
-        except Exception:
-            pass
+            return None
 
-        # 2. Cloud fallback (Groq) for online deployment
-        groq_key = os.environ.get("GROQ_API_KEY")
-        if groq_key:
+        if provider == "ollama":
             try:
-                groq_model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-                payload = json.dumps({
-                    "model": groq_model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "temperature": 0.1,
-                }).encode("utf-8")
-                req = urllib.request.Request(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    data=payload,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {groq_key}",
-                    },
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=25) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    answer = (data["choices"][0]["message"]["content"] or "").strip()
-                    if answer:
-                        return answer, f"groq:{groq_model}"
+                res = _try_ollama()
+                if res:
+                    return res
             except Exception:
                 pass
+            return None, "graph_semantic_reasoning"
+
+        if groq_key:
+            try:
+                res = _try_groq()
+                if res:
+                    return res
+            except Exception:
+                pass
+            allow_ollama = os.environ.get("ALLOW_OLLAMA_FALLBACK", "false").strip().lower() in {"1", "true", "yes"}
+            if allow_ollama:
+                try:
+                    res = _try_ollama()
+                    if res:
+                        return res
+                except Exception:
+                    pass
+            return None, "graph_semantic_reasoning"
+
+        try:
+            res = _try_ollama()
+            if res:
+                return res
+        except Exception:
+            pass
 
         return None, "graph_semantic_reasoning"
 
@@ -805,7 +842,6 @@ class QanoonGraphEngine:
         main_ids = {a.get("id") for a in main_arts if a.get("id")}
         stages: list[dict[str, Any]] = []
 
-        # 1) محطات نفاذ التشريع المختار وعلاقاته الصادرة
         for art in main_arts:
             enriched = enrich_article_with_source(art)
             rels = [
@@ -834,7 +870,6 @@ class QanoonGraphEngine:
                         "source_url": enriched.get("source_url"),
                     })
 
-        # 2) محطات لاحقة من تشريعات أخرى عدّلت أو ألغت أو صدرت بمقتضى هذا التشريع
         for other in self.articles:
             if other.get("id") in main_ids:
                 continue
@@ -864,7 +899,6 @@ class QanoonGraphEngine:
                         "source_url": enriched_other.get("source_url"),
                     })
 
-        # 3) إذا لم تُسجّل علاقات تعديل صريحة، نعرض محطات النفاذ الأساسية للمواد مرتبة زمنياً
         if not stages:
             sorted_main = sorted(
                 main_arts,

@@ -27,20 +27,18 @@ def _load_env_if_needed(force: bool = False) -> None:
             k, v = line.split("=", 1)
             k = k.strip()
             v = v.strip().strip('"').strip("'")
-            if k and k not in os.environ:
+            if k and (force or k not in os.environ or not os.environ[k].strip()):
                 os.environ[k] = v
 
     _ENV_LOADED = True
 
 
-_load_env_if_needed()
+_load_env_if_needed(force=True)
 
 
 def _clean_response_text(text: str) -> str:
-    # إزالة وسوم التفكير الداخلية لنماذج التفكير (المغلقة أو غير المكتملة)
     cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     cleaned = re.sub(r"<think>.*$", "", cleaned, flags=re.DOTALL).strip()
-
     if cleaned.startswith("```"):
         lines = cleaned.splitlines()
         cleaned = "\n".join(line for line in lines if not line.strip().startswith("```")).strip()
@@ -68,7 +66,7 @@ def _post_json_with_retry(
     payload: dict[str, Any],
     headers: dict[str, str],
     timeout: int,
-    max_retries: int = 2,
+    max_retries: int = 1,
 ) -> dict[str, Any]:
     encoded_body = json.dumps(payload).encode("utf-8")
     last_exc: Exception | None = None
@@ -85,17 +83,16 @@ def _post_json_with_retry(
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as http_err:
             last_exc = http_err
-            # لا فائدة من إعادة المحاولة عند أخطاء المصادقة أو الطلب غير الصالح
-            if http_err.code in {400, 401, 403, 404}:
+            if http_err.code in {400, 401, 403, 404, 429}:
                 raise
             if attempt < max_retries:
-                time.sleep(0.8 * (2 ** attempt))
+                time.sleep(0.4)
                 continue
             raise
         except (urllib.error.URLError, TimeoutError) as net_err:
             last_exc = net_err
             if attempt < max_retries:
-                time.sleep(0.8 * (2 ** attempt))
+                time.sleep(0.4)
                 continue
             raise
 
@@ -103,12 +100,13 @@ def _post_json_with_retry(
 
 
 def _call_groq(prompt: str, json_mode: bool = True, temperature: float = 0.1) -> str:
-    _load_env_if_needed()
+    _load_env_if_needed(force=True)
     api_key = os.getenv("GROQ_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("GROQ_API_KEY غير مضبوط في متغيرات البيئة")
 
     model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+    timeout_sec = int(os.getenv("GROQ_TIMEOUT_SECONDS", "20"))
     payload: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -125,17 +123,18 @@ def _call_groq(prompt: str, json_mode: bool = True, temperature: float = 0.1) ->
             "Authorization": f"Bearer {api_key}",
             "User-Agent": "Mozilla/5.0",
         },
-        timeout=60,
-        max_retries=2,
+        timeout=timeout_sec,
+        max_retries=1,
     )
     content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
     return _clean_response_text(content)
 
 
 def _call_ollama(prompt: str, json_mode: bool = True, temperature: float = 0.1) -> str:
-    _load_env_if_needed()
+    _load_env_if_needed(force=True)
     endpoint, model = _resolve_ollama_endpoint_and_model()
-    num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
+    num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
+    timeout_sec = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "15"))
 
     payload: dict[str, Any] = {
         "model": model,
@@ -150,30 +149,35 @@ def _call_ollama(prompt: str, json_mode: bool = True, temperature: float = 0.1) 
         url=endpoint,
         payload=payload,
         headers={"Content-Type": "application/json"},
-        timeout=180,
-        max_retries=1,
+        timeout=timeout_sec,
+        max_retries=0,
     )
     content = data.get("message", {}).get("content", "")
     return _clean_response_text(content)
 
 
 def generate_text(prompt: str, json_mode: bool = True, temperature: float = 0.1) -> str:
-    _load_env_if_needed()
+    _load_env_if_needed(force=True)
     provider = os.getenv("LLM_PROVIDER", "groq").strip().lower()
-    order = ["groq", "ollama"] if provider != "ollama" else ["ollama", "groq"]
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
 
-    last_err: Exception | None = None
-    for p in order:
+    if provider == "none":
+        raise RuntimeError("LLM_PROVIDER مضبوط على none (وضع الإجابة المباشرة بدون LLM)")
+
+    if provider == "ollama":
+        return _call_ollama(prompt, json_mode=json_mode, temperature=temperature)
+
+    # الوضع الافتراضي: استخدام Groq مباشرة إذا وُجد المفتاح، وعدم الانتظار طويلاً على Ollama
+    if groq_key:
         try:
-            if p == "groq" and os.getenv("GROQ_API_KEY", "").strip():
-                return _call_groq(prompt, json_mode=json_mode, temperature=temperature)
-            if p == "ollama":
-                return _call_ollama(prompt, json_mode=json_mode, temperature=temperature)
+            return _call_groq(prompt, json_mode=json_mode, temperature=temperature)
         except Exception as exc:
-            last_err = exc
-            continue
+            allow_ollama_fallback = os.getenv("ALLOW_OLLAMA_FALLBACK", "false").strip().lower() in {"1", "true", "yes"}
+            if allow_ollama_fallback:
+                return _call_ollama(prompt, json_mode=json_mode, temperature=temperature)
+            raise RuntimeError(f"فشل استدعاء Groq: {exc}") from exc
 
-    raise RuntimeError(f"تعذر توليد الاستجابة عبر Groq أو Ollama: {last_err}")
+    return _call_ollama(prompt, json_mode=json_mode, temperature=temperature)
 
 
 def _extract_json_object(raw_text: str) -> dict[str, Any]:
@@ -185,7 +189,6 @@ def _extract_json_object(raw_text: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
-    # محاولة استخراج أول كائن JSON متوازن في حال أضاف النموذج مقدمة أو خاتمة نصية
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start != -1 and end != -1 and end > start:

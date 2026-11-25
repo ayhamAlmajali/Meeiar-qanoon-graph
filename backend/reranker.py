@@ -5,6 +5,7 @@ import unicodedata
 
 _RERANKER_MODEL = None
 _LOAD_FAILED = False
+RERANKER_ENABLED = os.environ.get("RERANKER_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
 MODEL_NAME = os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3").strip()
 ARABIC_TO_WESTERN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 
@@ -53,6 +54,9 @@ def rerank_articles(
 
     clean_query = _norm(query)
     if not clean_query:
+        return [(art, None) for art in articles[:top_k]]
+
+    if not RERANKER_ENABLED:
         return [(art, None) for art in articles[:top_k]]
 
     model = get_reranker()
