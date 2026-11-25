@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import tempfile
 from typing import Any, Literal
@@ -25,7 +26,7 @@ app = FastAPI(title="معيار - محرك التحليل التشريعي", ver
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -148,9 +149,7 @@ def audit_clause_or_draft(payload: AuditRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="يرجى إدخال نص البند أو المسودة التشريعية")
 
     engine = get_engine()
-    candidate_articles = engine.search_articles(clause)[:12]
-    if not candidate_articles:
-        candidate_articles = engine.search_articles("")[:12]
+    candidate_articles = engine.search_articles(clause, min_score=3.5)[:10]
 
     if not candidate_articles:
         return {
@@ -251,8 +250,11 @@ def ingest_raw_text(payload: IngestTextRequest) -> dict:
 @app.post("/ingest/file")
 async def ingest_uploaded_file(file: UploadFile = File(...)) -> dict:
     suffix = Path(file.filename or "document.txt").suffix
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="حجم الملف يتجاوز الحد الأقصى المسموح به (10 ميجابايت)")
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await file.read())
+        tmp.write(content)
         tmp_path = Path(tmp.name)
     try:
         raw_text = extract_text_from_file(tmp_path)
