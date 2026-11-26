@@ -13,6 +13,7 @@ const icons = {
   fit: <><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3" /><path d="m9 9 6 6m0-6-6 6" /></>,
   refresh: <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M5.5 9a7 7 0 0 1 11.6-2.5L20 12M4 12l2.9 5.5A7 7 0 0 0 18.5 15" /></>,
   arrow: <><path d="M19 12H5m7 7-7-7 7-7" /></>,
+  arrowRight: <><path d="M5 12h14m-7-7 7 7-7 7" /></>,
   book: <><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v17H6.5A2.5 2.5 0 0 0 4 22z" /><path d="M4 5.5v14A2.5 2.5 0 0 1 6.5 17H20M8 7h8m-8 4h8" /></>,
   copy: <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></>,
   external: <><path d="M14 4h6v6m0-6-9 9" /><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5" /></>,
@@ -22,7 +23,14 @@ const icons = {
   menu: <><path d="M4 6h16M4 12h16M4 18h16" /></>,
   shield: <><path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z" /><path d="m9 12 2 2 4-4" /></>,
   calendar: <><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M16 3v4M8 3v4M3 10h18" /></>,
-  sparkle: <><path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z" /><path d="m19 14 .9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9L19 14Z" /></>
+  sparkle: <><path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z" /><path d="m19 14 .9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9L19 14Z" /></>,
+  scale: <><path d="M12 3v18M5 21h14M4 7h16" /><path d="m7 7-3 6a3 3 0 0 0 6 0L7 7Zm10 0-3 6a3 3 0 0 0 6 0l-3-6Z" /></>,
+  history: <><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l3 2" /></>,
+  expand: <><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" /></>,
+  minimize: <><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M10 14l-7 7" /></>,
+  tag: <><path d="M12 2H2v10l9.3 9.3a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4L12 2Z" /><circle cx="7" cy="7" r="1.2" /></>,
+  info: <><circle cx="12" cy="12" r="9" /><path d="M12 16v-4m0-4h.01" /></>,
+  chevronDown: <path d="m6 9 6 6 6-6" />
 };
 
 export function Icon({ name, size = 20, className = "" }) {
@@ -35,7 +43,7 @@ export function Icon({ name, size = 20, className = "" }) {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.7"
+      strokeWidth="1.75"
       strokeLinecap="round"
       strokeLinejoin="round"
     >
@@ -73,14 +81,19 @@ export function OfficialSource({
     <div className={`legal-source ${className}`.trim()}>
       {heading && <strong>{heading}</strong>}
       {label && <span className="legal-source-label">{label}</span>}
-      {href && <a className="source-link" href={href} target="_blank" rel="noopener noreferrer"><Icon name="external" size={15} />فتح المصدر الرسمي</a>}
+      {href && (
+        <a className="source-link" href={href} target="_blank" rel="noopener noreferrer">
+          <Icon name="external" size={14} />
+          فتح المصدر الرسمي
+        </a>
+      )}
     </div>
   );
 }
 
 export function PageHeader({ eyebrow, title, description, actions }) {
   return (
-    <header className="page-header">
+    <header className="page-header animate-enter">
       <div>
         {eyebrow && <p className="eyebrow">{eyebrow}</p>}
         <h1>{title}</h1>
@@ -95,31 +108,64 @@ export function Panel({ className = "", children, ...props }) {
   return <section className={`panel ${className}`.trim()} {...props}>{children}</section>;
 }
 
-export function Button({ variant = "primary", icon, children, className = "", ...props }) {
+export function Button({ variant = "primary", size = "md", icon, children, className = "", ...props }) {
+  const sizeClass = size === "sm" ? "button-sm" : "";
   return (
-    <button className={`button button-${variant} ${className}`.trim()} {...props}>
-      {icon && <Icon name={icon} size={18} />}
-      <span>{children}</span>
+    <button className={`button button-${variant} ${sizeClass} ${className}`.trim()} {...props}>
+      {icon && <Icon name={icon} size={size === "sm" ? 15 : 17} />}
+      {children != null && <span>{children}</span>}
     </button>
   );
 }
 
 export function LoadingState({ label = "جارٍ تحميل البيانات..." }) {
-  return <div className="state-card loading-state" role="status"><span className="spinner" /><span>{label}</span></div>;
+  return (
+    <div className="state-card loading-state" role="status">
+      <span className="spinner" />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+export function SkeletonCards({ count = 3 }) {
+  return (
+    <div className="grid gap-3" aria-hidden="true">
+      {Array.from({ length: count }).map((_, index) => (
+        <div key={index} className="rounded-xl border border-slate-200 bg-white p-4 grid gap-3">
+          <div className="skeleton skeleton-line short" />
+          <div className="skeleton skeleton-line" />
+          <div className="skeleton skeleton-line medium" />
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export function ErrorState({ message, onRetry }) {
   return (
     <div className="state-card error-state" role="alert">
       <Icon name="alert" size={22} />
-      <div><strong>تعذّر تحميل المحتوى</strong><p>{message}</p></div>
-      {onRetry && <Button variant="secondary" icon="refresh" onClick={onRetry}>إعادة المحاولة</Button>}
+      <div>
+        <strong>تعذّر تحميل المحتوى</strong>
+        <p>{message}</p>
+      </div>
+      {onRetry && (
+        <Button variant="secondary" size="sm" icon="refresh" onClick={onRetry}>
+          إعادة المحاولة
+        </Button>
+      )}
     </div>
   );
 }
 
 export function EmptyState({ title, description, icon = "book" }) {
-  return <div className="empty-state"><span className="empty-icon"><Icon name={icon} size={24} /></span><strong>{title}</strong>{description && <p>{description}</p>}</div>;
+  return (
+    <div className="empty-state">
+      <span className="empty-icon"><Icon name={icon} size={23} /></span>
+      <strong>{title}</strong>
+      {description && <p>{description}</p>}
+    </div>
+  );
 }
 
 const statusMeta = [
@@ -142,7 +188,7 @@ function finiteScore(value) {
   return Number.isFinite(score) ? score : null;
 }
 
-export function SimilarityBadge({ article, className = "" }) {
+export function SimilarityBadge({ article, className = "", showMeter = false }) {
   const cosine = finiteScore(article?.cosine_similarity);
   const fallback = finiteScore(article?.similarity);
   if (article?.rank_status === "unranked" && (cosine ?? 0) === 0 && (fallback ?? 0) === 0) return null;
@@ -153,11 +199,18 @@ export function SimilarityBadge({ article, className = "" }) {
     maximumFractionDigits: 3,
     useGrouping: false
   }).format(score);
+  const pct = Math.max(0, Math.min(100, Math.round(score * 100)));
   const explanation = `درجة التشابه الدلالي بين النصوص: ${formatted}. لا تمثل صحة الحكم القانوني أو درجة اليقين.`;
 
   return (
-    <span className={`similarity-badge ${className}`.trim()} title={explanation} aria-label={explanation}>
-      <span>تشابه دلالي</span><bdi dir="ltr">{formatted}</bdi>
+    <span className={`similarity-badge ${showMeter ? "similarity-meter" : ""} ${className}`.trim()} title={explanation} aria-label={explanation}>
+      <span>تشابه دلالي</span>
+      {showMeter && (
+        <span className="similarity-bar-track" aria-hidden="true">
+          <span className="similarity-bar-fill" style={{ width: `${pct}%`, display: "block" }} />
+        </span>
+      )}
+      <bdi dir="ltr">{formatted}</bdi>
     </span>
   );
 }
@@ -172,7 +225,9 @@ const relationMeta = {
   references: ["إحالة تشريعية", "relation-reference"],
   protects_over: ["حماية تشريعية", "relation-protection"],
   implements: ["تنفيذ تشريعي", "relation-implementation"],
-  details_or_links: ["ارتباط تنظيمي", "relation-links"]
+  details_or_links: ["ارتباط تنظيمي", "relation-links"],
+  issued_under: ["صادر بموجب", "relation-implementation"],
+  possible_implicit_repeal: ["إلغاء ضمني محتمل", "relation-repeal"]
 };
 
 export function relationLabel(value) {
@@ -203,11 +258,18 @@ export function RelationBadge({ relation }) {
   return <span className={`badge relation-badge ${className}`}>{label}</span>;
 }
 
-export function StatCard({ label, value, note, icon, tone = "default" }) {
+export function StatCard({ label, value, note, icon, tone = "default", loading = false }) {
   return (
     <article className={`stat-card stat-${tone}`}>
-      <div className="stat-top"><span className="stat-icon"><Icon name={icon} size={20} /></span><span>{label}</span></div>
-      <strong className="stat-value">{value ?? "—"}</strong>
+      <div className="stat-top">
+        <span>{label}</span>
+        <span className="stat-icon"><Icon name={icon} size={19} /></span>
+      </div>
+      {loading ? (
+        <div className="skeleton h-8 w-20 my-1" />
+      ) : (
+        <strong className="stat-value">{value ?? "—"}</strong>
+      )}
       {note && <span className="stat-note">{note}</span>}
     </article>
   );
@@ -220,11 +282,19 @@ export function ArticleReference({ article, onOpen }) {
   const id = item.id || item.article_id || (number != null ? String(number) : null);
   return (
     <button className="reference-link" type="button" disabled={!id} onClick={() => onOpen?.(id)}>
-      <Icon name="book" size={16} /><span>{number == null ? title : `المادة ${number} — ${title}`}</span><Icon name="arrow" size={15} />
+      <Icon name="book" size={16} />
+      <span>{number == null ? title : `المادة ${number} — ${title}`}</span>
+      <Icon name="arrow" size={15} />
     </button>
   );
 }
 
-export function NavLinkItem({ to, icon, children, onClick }) {
-  return <NavLink to={to} end={to === "/"} className="nav-link" onClick={onClick}><Icon name={icon} size={20} /><span>{children}</span></NavLink>;
+export function NavLinkItem({ to, icon, badge, children, onClick }) {
+  return (
+    <NavLink to={to} end={to === "/"} className="nav-link" onClick={onClick}>
+      <span className="nav-link-icon"><Icon name={icon} size={18} /></span>
+      <span>{children}</span>
+      {badge && <span className="nav-link-badge">{badge}</span>}
+    </NavLink>
+  );
 }

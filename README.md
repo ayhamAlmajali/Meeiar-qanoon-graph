@@ -20,6 +20,7 @@ Ma’yar is an Arabic-first, right-to-left web application for exploring Jordani
 - [API reference](#api-reference)
 - [Data and graph model](#data-and-graph-model)
 - [AI and retrieval behavior](#ai-and-retrieval-behavior)
+- [Evaluation & Benchmark Results](#evaluation--benchmark-results)
 - [Frontend behavior](#frontend-behavior)
 - [Ingestion and maintenance](#ingestion-and-maintenance)
 - [Verification](#verification)
@@ -233,6 +234,64 @@ The service combines a local legislative graph, lexical retrieval, stored embedd
 5. Evidence, similarity scores, verdicts, and rewrites are model/retrieval outputs. They should be checked against the referenced legislation and official sources.
 
 Model names and provider availability are runtime configuration, not guaranteed frontend features. A build does not verify connectivity to Ollama, Groq, or external model downloads.
+
+## Evaluation & Benchmark Results
+
+The project evaluation script, [`scripts/evaluate_qanoon.py`](scripts/evaluate_qanoon.py), defines small `/ask` retrieval and `/audit` compliance-classification benchmarks. The `/ask` values below are the measured results provided for the recorded evaluation run. `/audit` numerical results are not available in that run's recorded output and are intentionally not inferred.
+
+### AI Legal Retrieval Evaluation — `/ask`
+
+The retrieval benchmark uses three predefined Arabic legal questions and manually specified expected article IDs. The reported results are:
+
+| Test case | Precision | Recall | F1-Score | Average Cosine Similarity |
+| --- | ---: | ---: | ---: | ---: |
+| Q1 — Employment contracts, duration, working hours, and occupational safety | 1.00 | 0.86 | 0.92 | 0.5933 |
+| Q2 — Termination restrictions, annual leave, and overtime | 1.00 | 0.86 | 0.92 | 0.6112 |
+| Q3 — Flexible work regulations and contractual obligations (2024) | 1.00 | 0.86 | 0.92 | 0.6775 |
+| **Overall Average** | **1.00** | **0.86** | **0.92** | **0.6274** |
+
+**Metric definitions**
+
+- **Precision:** The proportion of retrieved legal articles that are relevant to the expected article set.
+- **Recall:** The proportion of expected relevant legal articles successfully retrieved by the system.
+- **F1-Score:** The harmonic mean of Precision and Recall.
+- **Average Cosine Similarity:** The average cosine similarity of the retrieved evidence articles, used as a measure of semantic similarity between the query and retrieved content.
+
+**Key findings:** This benchmark measured 100% retrieval precision across all three test cases, approximately 86% recall, approximately 92% F1-Score, and an overall average cosine similarity of 0.6274. These results indicate strong precision for this particular benchmark, while some expected legal articles were not retrieved.
+
+Cosine similarity describes semantic similarity between text representations. It is not a probability, calibrated confidence score, or guarantee of legal correctness.
+
+### Compliance Classification Evaluation — `/audit`
+
+The script defines three contract-clause classification cases:
+
+| Case | Scenario | Expected Classification |
+| --- | --- | --- |
+| A1 | Contract clause allowing termination without notice or legitimate reason | `non_compliant` |
+| A2 | Contract clause recognizing the worker's entitlement to annual paid leave under Jordanian Labor Law | `compliant` |
+| A3 | An unrelated clause concerning ship registration fees through the Suez Canal | `insufficient_evidence` |
+
+The benchmark calculates classification accuracy and Macro-F1 by comparing each returned `compliance_status` with its expected classification. **The recorded execution output contains only the `/audit` evaluation section heading; it does not include individual predictions or the final accuracy and Macro-F1 summary. Numerical `/audit` results are therefore unavailable, and no claim that this benchmark passed is made.**
+
+### Benchmark Methodology
+
+Run the evaluation script from the repository root with:
+
+```bash
+python scripts/evaluate_qanoon.py
+```
+
+For `/ask`, the script sends each predefined Arabic question to the `/ask` endpoint, reads `evidence_articles`, compares the retrieved article IDs with the case's expected IDs, and calculates Precision, Recall, and F1-Score. It calculates each case's average from numeric `cosine_similarity` values in the retrieved evidence, then reports the arithmetic mean of the per-case metrics.
+
+For `/audit`, the script sends each predefined clause and its mode to `/audit`, compares the returned `compliance_status` with the expected classification, and calculates accuracy and Macro-F1 from the resulting predictions. This README reports no audit metric without a recorded completed evaluation result.
+
+### Benchmark Limitations and Transparency
+
+- The `/ask` benchmark currently contains three predefined questions; the `/audit` benchmark defines three predefined classification cases.
+- Expected article IDs and classification labels are the benchmark's reference answers. They are not an independent adjudication of every potentially relevant provision.
+- These results are an initial evaluation snapshot, not a comprehensive independent assessment of legal accuracy.
+- More test cases, broader legal coverage, and additional validation are needed before making stronger generalization claims.
+- Retrieval performance measures how the system returns evidence against these reference sets; it is distinct from whether a legal interpretation is correct.
 
 ## Frontend behavior
 

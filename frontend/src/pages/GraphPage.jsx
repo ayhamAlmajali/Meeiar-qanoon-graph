@@ -1,7 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import cytoscape from "cytoscape";
 import { api, getErrorMessage } from "../services/api";
-import { Button, EmptyState, ErrorState, Icon, legislationTypeLabel, LoadingState, OfficialSource, PageHeader, Panel, RelationBadge, SimilarityBadge, StatusBadge, relationLabel } from "../components/common/UI";
+import {
+  Button,
+  EmptyState,
+  ErrorState,
+  Icon,
+  legislationTypeLabel,
+  LoadingState,
+  OfficialSource,
+  PageHeader,
+  Panel,
+  RelationBadge,
+  SimilarityBadge,
+  StatusBadge,
+  relationLabel
+} from "../components/common/UI";
 
 const relationClasses = {
   repeals: "edge-repeal",
@@ -93,23 +107,46 @@ function changeTitle(edge, nodeMap) {
   return `${source ? nodeLabel(source).replace("\n", " — ") : edge.source_label || edge.source} ← ${target ? nodeLabel(target).replace("\n", " — ") : edge.target_label || edge.target}`;
 }
 
-function ChangeGroup({ title, items, className, nodeMap }) {
+function ChangeGroup({ title, items, className, nodeMap, onSelectArticle }) {
   const edges = Array.isArray(items) ? items : [];
   return (
     <article className={`graph-change-card ${className}`}>
-      <div className="graph-change-heading"><h3>{title}</h3><span>{edges.length.toLocaleString("ar")}</span></div>
-      {edges.length ? <div className="graph-change-list">{edges.map((edge, index) => (
-        <div className="graph-change-item" key={`${edge.source}-${edge.target}-${index}`}>
-          <strong>{changeTitle(edge, nodeMap)}</strong>
-          <RelationBadge relation={edge.relation_type} />
-          {edge.note && <p>{edge.note}</p>}
+      <div className="graph-change-heading">
+        <h3>{title}</h3>
+        <span>{edges.length.toLocaleString("ar")}</span>
+      </div>
+      {edges.length ? (
+        <div className="graph-change-list">
+          {edges.map((edge, index) => {
+            const targetId = nodeMap.has(String(edge.source)) ? String(edge.source) : nodeMap.has(String(edge.target)) ? String(edge.target) : null;
+            return (
+              <div className="graph-change-item" key={`${edge.source}-${edge.target}-${index}`}>
+                <div className="flex items-start justify-between gap-2">
+                  <strong>{changeTitle(edge, nodeMap)}</strong>
+                  {targetId && (
+                    <button
+                      type="button"
+                      className="text-button !px-2 !py-0.5 !text-xs shrink-0"
+                      onClick={() => onSelectArticle?.(targetId)}
+                    >
+                      تحديد
+                    </button>
+                  )}
+                </div>
+                <RelationBadge relation={edge.relation_type} />
+                {edge.note && <p>{edge.note}</p>}
+              </div>
+            );
+          })}
         </div>
-      ))}</div> : <p className="muted-copy">لا توجد علاقات مسجّلة.</p>}
+      ) : (
+        <p className="muted-copy">لا توجد علاقات مسجّلة.</p>
+      )}
     </article>
   );
 }
 
-function RelationshipArticleCard({ node, fallbackLabel, caption }) {
+function RelationshipArticleCard({ node, fallbackLabel, caption, onJump }) {
   const isArticle = Boolean(node && node.kind !== "external_ref");
   const valueOrFallback = (value) => value == null || String(value).trim() === "" ? DATA_UNAVAILABLE : value;
   const heading = node
@@ -117,23 +154,37 @@ function RelationshipArticleCard({ node, fallbackLabel, caption }) {
     : valueOrFallback(fallbackLabel);
 
   return (
-    <article className="min-w-0 rounded-xl border border-slate-200 bg-white p-3">
-      <p className="eyebrow">{caption}</p>
-      <h3 className="my-2 break-words text-base font-semibold text-slate-800">{heading}</h3>
-      <dl className="grid gap-2 text-sm text-slate-600">
+    <article className="min-w-0 rounded-xl border border-slate-200 bg-white p-3.5 shadow-xs">
+      <div className="flex items-center justify-between gap-2">
+        <p className="eyebrow !m-0">{caption}</p>
+        {node && (
+          <button type="button" className="text-button !px-2 !py-0.5 !text-xs" onClick={() => onJump?.(node.id)}>
+            معاينة العقدة
+          </button>
+        )}
+      </div>
+      <h3 className="my-2 break-words text-base font-bold text-slate-900">{heading}</h3>
+      <dl className="grid gap-1.5 text-xs text-slate-600">
         <div><dt className="inline font-semibold">التشريع: </dt><dd className="inline">{valueOrFallback(isArticle ? node.legislation_title : null)}</dd></div>
         <div><dt className="inline font-semibold">رقم المادة: </dt><dd className="inline">{valueOrFallback(isArticle ? node.article_number : null)}</dd></div>
         <div className="flex flex-wrap items-center gap-2"><dt className="font-semibold">الحالة:</dt><dd>{isArticle && node.status ? <StatusBadge status={node.status} /> : DATA_UNAVAILABLE}</dd></div>
       </dl>
-      <div className="legal-text mt-3 max-h-52 overflow-auto text-sm" dir="rtl" lang="ar">
+      <div className="legal-text mt-3 max-h-48 overflow-auto !text-sm !p-3" dir="rtl" lang="ar">
         {valueOrFallback(isArticle ? node.text : null)}
       </div>
-      {isArticle && <OfficialSource className="mt-2 text-sm" sourceUrl={node.source_url} sourceLabel={node.source_label} officialSource={node.official_source} />}
+      {isArticle && (
+        <OfficialSource
+          className="mt-2 text-xs"
+          sourceUrl={node.source_url}
+          sourceLabel={node.source_label}
+          officialSource={node.official_source}
+        />
+      )}
     </article>
   );
 }
 
-function GraphCanvas({ graphData, onSelectNode, onSelectEdge, graphRef, onReady }) {
+function GraphCanvas({ graphData, showEdgeLabels, onSelectNode, onSelectEdge, onHoverChange, graphRef, onReady }) {
   const containerRef = useRef(null);
 
   useEffect(() => {
@@ -160,6 +211,7 @@ function GraphCanvas({ graphData, onSelectNode, onSelectEdge, graphRef, onReady 
           source: String(edge.source),
           target: String(edge.target),
           relation,
+          relationText: relationLabel(relation),
           note: edge.note || "",
           sourceLabel: edge.source_label || "",
           targetLabel: edge.target_label || ""
@@ -175,56 +227,91 @@ function GraphCanvas({ graphData, onSelectNode, onSelectEdge, graphRef, onReady 
       maxZoom: 2.8,
       layout: { ...GRAPH_LAYOUT, fit: true },
       style: [
-        { selector: "node", style: {
-          "shape": "round-rectangle",
-          "background-color": "#F4EEE2",
-          "border-color": "#65769B",
-          "border-width": 1.5,
-          "label": "data(label)",
-          "font-family": "IBM Plex Sans Arabic, sans-serif",
-          "font-size": 14,
-          "font-weight": 500,
-          "color": "#292A2D",
-          "text-wrap": "wrap",
-          "text-max-width": 218,
-          "text-valign": "center",
-          "text-halign": "center",
-          "width": 252,
-          "height": 82,
-          "padding": "10px",
-          "text-outline-width": 0,
-          "overlay-opacity": 0,
-          "transition-property": "background-color, border-color, opacity",
-          "transition-duration": "160ms"
-        } },
-        { selector: "node.node-repealed", style: { "background-color": "#F7E9E4", "border-color": "#B76648", "color": "#754637" } },
-        { selector: "node.node-amended", style: { "background-color": "#F5EBD4", "border-color": "#C39A50", "color": "#6F562A" } },
-        { selector: "node.node-unknown", style: { "background-color": "#EEE8DC", "border-color": "#A7A093", "color": "#57534D" } },
-        { selector: "node.node-external", style: { "shape": "ellipse", "width": 210, "height": 72, "background-color": "#E8EAF1", "border-color": "#7583A1", "color": "#394C7B" } },
-        { selector: "edge", style: {
-          "width": 2,
-          "line-color": "#AAA296",
-          "target-arrow-shape": "triangle",
-          "target-arrow-color": "#AAA296",
-          "arrow-scale": 0.8,
-          "curve-style": "bezier",
-          "opacity": 0.76,
-          "overlay-opacity": 0
-        } },
-        { selector: "edge.edge-repeal", style: { "line-color": "#B76648", "target-arrow-color": "#B76648" } },
-        { selector: "edge.edge-amendment", style: { "line-color": "#C39A50", "target-arrow-color": "#C39A50" } },
-        { selector: "edge.edge-overlap", style: { "line-color": "#394C7B", "target-arrow-color": "#394C7B" } },
-        { selector: "edge.edge-contradiction", style: { "line-color": "#9D473E", "target-arrow-color": "#9D473E", "line-style": "dashed", "width": 2.8 } },
-        { selector: "edge.edge-reference", style: { "line-color": "#788A70", "target-arrow-color": "#788A70", "line-style": "dotted" } },
-        { selector: "edge.edge-protection", style: { "line-color": "#536B55", "target-arrow-color": "#536B55" } },
-        { selector: "edge.edge-implementation", style: { "line-color": "#394C7B", "target-arrow-color": "#394C7B" } },
-        { selector: "node:selected", style: { "border-color": "#273A67", "border-width": 4, "background-blacken": -0.07 } },
-        { selector: "node.hovered", style: { "border-color": "#B76648", "border-width": 3, "z-index": 7 } },
-        { selector: "node.impact-node", style: { "background-color": "#E3EADF", "border-color": "#536B55", "border-width": 3, "z-index": 5 } },
-        { selector: "node.current-node", style: { "border-color": "#273A67", "border-width": 4, "z-index": 6 } },
-        { selector: "edge.impact-edge", style: { "line-color": "#B76648", "target-arrow-color": "#B76648", "width": 3.5, "opacity": 1, "z-index": 4 } },
+        {
+          selector: "node",
+          style: {
+            "shape": "round-rectangle",
+            "background-color": "#EAF5EF",
+            "border-color": "#2E785D",
+            "border-width": 1.6,
+            "label": "data(label)",
+            "font-family": "IBM Plex Sans Arabic, sans-serif",
+            "font-size": 13.5,
+            "font-weight": 600,
+            "color": "#162544",
+            "text-wrap": "wrap",
+            "text-max-width": 218,
+            "text-valign": "center",
+            "text-halign": "center",
+            "width": 252,
+            "height": 84,
+            "padding": "10px",
+            "text-outline-width": 0,
+            "overlay-opacity": 0,
+            "transition-property": "background-color, border-color, opacity",
+            "transition-duration": "160ms"
+          }
+        },
+        {
+          selector: "node.node-repealed",
+          style: { "background-color": "#FCECEB", "border-color": "#A63A31", "color": "#73231C" }
+        },
+        {
+          selector: "node.node-amended",
+          style: { "background-color": "#FDF4E3", "border-color": "#B48332", "color": "#6E4810" }
+        },
+        {
+          selector: "node.node-unknown",
+          style: { "background-color": "#F0ECE2", "border-color": "#9DA3AE", "color": "#3D434F" }
+        },
+        {
+          selector: "node.node-external",
+          style: {
+            "shape": "ellipse",
+            "width": 214,
+            "height": 74,
+            "background-color": "#EDF2FA",
+            "border-color": "#334D82",
+            "color": "#162544"
+          }
+        },
+        {
+          selector: "edge",
+          style: {
+            "width": 2.2,
+            "line-color": "#9DA3AE",
+            "target-arrow-shape": "triangle",
+            "target-arrow-color": "#9DA3AE",
+            "arrow-scale": 0.85,
+            "curve-style": "bezier",
+            "opacity": 0.78,
+            "overlay-opacity": 0,
+            "font-family": "IBM Plex Sans Arabic, sans-serif",
+            "font-size": 11,
+            "color": "#162544",
+            "text-background-color": "#FFFFFF",
+            "text-background-opacity": 0.9,
+            "text-background-padding": "3px",
+            "text-border-color": "#E3DFD4",
+            "text-border-width": 1,
+            "text-border-opacity": 0.9
+          }
+        },
+        { selector: "edge.show-label", style: { "label": "data(relationText)" } },
+        { selector: "edge.edge-repeal", style: { "line-color": "#A63A31", "target-arrow-color": "#A63A31" } },
+        { selector: "edge.edge-amendment", style: { "line-color": "#B48332", "target-arrow-color": "#B48332" } },
+        { selector: "edge.edge-overlap", style: { "line-color": "#23477C", "target-arrow-color": "#23477C" } },
+        { selector: "edge.edge-contradiction", style: { "line-color": "#932E26", "target-arrow-color": "#932E26", "line-style": "dashed", "width": 2.8 } },
+        { selector: "edge.edge-reference", style: { "line-color": "#2E785D", "target-arrow-color": "#2E785D", "line-style": "dotted" } },
+        { selector: "edge.edge-protection", style: { "line-color": "#1F5E48", "target-arrow-color": "#1F5E48" } },
+        { selector: "edge.edge-implementation", style: { "line-color": "#233863", "target-arrow-color": "#233863" } },
+        { selector: "node:selected", style: { "border-color": "#162544", "border-width": 4, "background-blacken": -0.05 } },
+        { selector: "node.hovered", style: { "border-color": "#B48332", "border-width": 3, "z-index": 7 } },
+        { selector: "node.impact-node", style: { "background-color": "#DFF2E8", "border-color": "#1F5E48", "border-width": 3, "z-index": 5 } },
+        { selector: "node.current-node", style: { "border-color": "#162544", "border-width": 4, "z-index": 6 } },
+        { selector: "edge.impact-edge", style: { "line-color": "#A63A31", "target-arrow-color": "#A63A31", "width": 3.5, "opacity": 1, "z-index": 4 } },
         { selector: ".filtered-out", style: { "display": "none" } },
-        { selector: ".faded", style: { "opacity": 0.18, "text-opacity": 0.22 } }
+        { selector: ".faded", style: { "opacity": 0.16, "text-opacity": 0.2 } }
       ]
     });
 
@@ -246,10 +333,26 @@ function GraphCanvas({ graphData, onSelectNode, onSelectEdge, graphRef, onReady 
       instance.elements().addClass("faded");
       event.target.closedNeighborhood().removeClass("faded");
       event.target.addClass("hovered");
+      onHoverChange?.({
+        kind: "node",
+        title: String(event.target.data("label") || "").replace("\n", " — "),
+        meta: event.target.data("status") || "مادة"
+      });
     });
     instance.on("mouseout", "node", (event) => {
       instance.elements().removeClass("faded");
       event.target.removeClass("hovered");
+      onHoverChange?.(null);
+    });
+    instance.on("mouseover", "edge", (event) => {
+      onHoverChange?.({
+        kind: "edge",
+        title: `${event.target.data("sourceLabel") || event.target.data("source")} ← ${event.target.data("targetLabel") || event.target.data("target")}`,
+        meta: event.target.data("relationText")
+      });
+    });
+    instance.on("mouseout", "edge", () => {
+      onHoverChange?.(null);
     });
 
     const resize = () => instance.resize();
@@ -264,7 +367,13 @@ function GraphCanvas({ graphData, onSelectNode, onSelectEdge, graphRef, onReady 
       instance.destroy();
       if (graphRef.current === instance) graphRef.current = null;
     };
-  }, [graphData, graphRef, onReady, onSelectEdge, onSelectNode]);
+  }, [graphData, graphRef, onHoverChange, onReady, onSelectEdge, onSelectNode]);
+
+  useEffect(() => {
+    const instance = graphRef.current;
+    if (!instance) return;
+    instance.edges().toggleClass("show-label", showEdgeLabels);
+  }, [showEdgeLabels, graphRef, graphData]);
 
   return <div ref={containerRef} className="graph-canvas" role="img" aria-label="خريطة تفاعلية للعلاقات التشريعية" />;
 }
@@ -283,6 +392,11 @@ export default function GraphPage() {
   const [relationFilter, setRelationFilter] = useState("all");
   const [legislationFilter, setLegislationFilter] = useState("all");
   const [conflictLab, setConflictLab] = useState(false);
+  const [showEdgeLabels, setShowEdgeLabels] = useState(false);
+  const [expandedView, setExpandedView] = useState(false);
+  const [hoveredInfo, setHoveredInfo] = useState(null);
+  const [copiedArticle, setCopiedArticle] = useState(false);
+  const [changeTab, setChangeTab] = useState("all");
   const graphRef = useRef(null);
   const previousConflictLab = useRef(false);
   const [graphInstanceVersion, setGraphInstanceVersion] = useState(0);
@@ -295,7 +409,11 @@ export default function GraphPage() {
       if (graphResult.status === "fulfilled" && Array.isArray(graphResult.value?.nodes)) {
         setGraphState({ loading: false, data: graphResult.value, error: "" });
       } else {
-        setGraphState({ loading: false, data: null, error: graphResult.status === "rejected" ? getErrorMessage(graphResult.reason) : "استجابة الرسم البياني غير متوقعة." });
+        setGraphState({
+          loading: false,
+          data: null,
+          error: graphResult.status === "rejected" ? getErrorMessage(graphResult.reason) : "استجابة الرسم البياني غير متوقعة."
+        });
       }
       if (changesResult.status === "fulfilled") setChanges(changesResult.value);
       else setChangesError(getErrorMessage(changesResult.reason));
@@ -304,13 +422,15 @@ export default function GraphPage() {
   }, []);
 
   const nodes = graphState.data?.nodes || [];
+  const edges = graphState.data?.edges || [];
   const nodeMap = useMemo(() => new Map(nodes.map((node) => [String(node.id), node])), [nodes]);
   const legislations = useMemo(() => [...new Set(nodes.map((node) => node.legislation_title).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ar")), [nodes]);
-  const relationTypes = useMemo(() => [...new Set((graphState.data?.edges || []).map((edge) => edge.relation_type).filter(Boolean))], [graphState.data]);
+  const relationTypes = useMemo(() => [...new Set(edges.map((edge) => edge.relation_type).filter(Boolean))], [edges]);
+
   const conflictNodeIds = useMemo(() => {
     if (!conflictLab) return null;
     const ids = new Set();
-    (graphState.data?.edges || []).forEach((edge) => {
+    edges.forEach((edge) => {
       const rawRelation = String(edge.relation_type || "").toLowerCase();
       const relation = rawRelation.replace(/^incoming_/, "");
       const matchesRelation = relationFilter === "all" || rawRelation === relationFilter;
@@ -320,7 +440,8 @@ export default function GraphPage() {
       }
     });
     return ids;
-  }, [conflictLab, graphState.data, relationFilter]);
+  }, [conflictLab, edges, relationFilter]);
+
   const visibleNodes = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     return nodes.filter((node) => {
@@ -332,7 +453,24 @@ export default function GraphPage() {
       return matchesSearch && matchesStatus && matchesLegislation && matchesConflict;
     });
   }, [nodes, search, statusFilter, legislationFilter, conflictNodeIds]);
+
+  const visibleStats = useMemo(() => {
+    const stats = { active: 0, amended: 0, repealed: 0, external: 0 };
+    visibleNodes.forEach((node) => {
+      if (node.kind === "external_ref") {
+        stats.external += 1;
+        return;
+      }
+      const key = statusKey(node.status);
+      if (key === "active") stats.active += 1;
+      else if (key === "amended") stats.amended += 1;
+      else if (key === "repealed") stats.repealed += 1;
+    });
+    return stats;
+  }, [visibleNodes]);
+
   const onReady = useCallback(() => setGraphInstanceVersion((value) => value + 1), []);
+
   const onSelectNode = useCallback((identifier) => {
     const node = nodeMap.get(String(identifier));
     if (!node) return;
@@ -340,10 +478,11 @@ export default function GraphPage() {
     applyImpactHighlight(graph, identifier, null, nodeMap);
     if (graph) {
       const selected = graph.getElementById(String(identifier));
-      graph.animate({ center: { eles: selected }, zoom: Math.max(graph.zoom(), 0.82) }, { duration: 250 });
+      graph.animate({ center: { eles: selected }, zoom: Math.max(graph.zoom(), 0.85) }, { duration: 250 });
     }
     setSelectedEdge(null);
     setSelectedNode(node);
+    setCopiedArticle(false);
     setImpactError("");
     if (node.kind !== "external_ref") {
       setDetailState({ loading: true, article: null, neighbors: [], impact: null, error: "" });
@@ -364,6 +503,7 @@ export default function GraphPage() {
       setDetailState({ loading: false, article: node, neighbors: [], impact: null, error: "" });
     }
   }, [nodeMap]);
+
   const onSelectEdge = useCallback((edge) => {
     graphRef.current?.elements().removeClass("impact-node current-node impact-edge");
     graphRef.current?.nodes().unselect();
@@ -439,11 +579,13 @@ export default function GraphPage() {
     const visibleNodesInGraph = graph.nodes().filter((node) => !node.hasClass("filtered-out"));
     if (visibleNodesInGraph.length) graph.fit(visibleNodesInGraph, 56);
   };
+
   const zoomBy = (scale) => {
     const graph = graphRef.current;
     if (!graph) return;
     graph.zoom({ level: graph.zoom() * scale, renderedPosition: { x: graph.width() / 2, y: graph.height() / 2 } });
   };
+
   const resetGraph = () => {
     const graph = graphRef.current;
     if (!graph) return;
@@ -451,131 +593,487 @@ export default function GraphPage() {
     graph.nodes().unselect();
   };
 
+  const resetFilters = () => {
+    setSearch("");
+    setStatusFilter("all");
+    setRelationFilter("all");
+    setLegislationFilter("all");
+    setConflictLab(false);
+  };
+
+  const copySelectedText = async () => {
+    const text = detailState.article?.text || selectedNode?.text;
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedArticle(true);
+    } catch {
+      setCopiedArticle(false);
+    }
+  };
+
+  const hasActiveFilters = Boolean(search.trim() || statusFilter !== "all" || relationFilter !== "all" || legislationFilter !== "all" || conflictLab);
   const article = detailState.article || selectedNode;
   const topicTags = Array.isArray(article?.topic_tags) ? article.topic_tags : [];
   const paths = detailState.impact?.impact_paths;
   const impacted = detailState.impact?.impacted_nodes || [];
+  const outdatedRegs = detailState.impact?.potentially_outdated_regulations || [];
   const selectedEdgeSource = selectedEdge ? nodeMap.get(String(selectedEdge.source)) : null;
   const selectedEdgeTarget = selectedEdge ? nodeMap.get(String(selectedEdge.target)) : null;
+  const hasContradictions = Array.isArray(changes?.contradictions) && changes.contradictions.length > 0;
 
   return (
-    <>
-      <PageHeader eyebrow="استكشاف الروابط القانونية" title="الخريطة التشريعية" description="تصفّح المواد والعلاقات الفعلية في قاعدة المعرفة، ثم افتح مادة أو تتبّع أثرها." actions={<span className="graph-data-count">{nodes.length ? `${nodes.length.toLocaleString("ar")} عقدة` : "—"}</span>} />
-      {graphState.loading ? <LoadingState label="جارٍ بناء خريطة الترابط..." />
-        : graphState.error ? <ErrorState message={graphState.error} onRetry={() => window.location.reload()} />
-          : (
-            <Panel className="graph-workspace">
-              <div className="mb-5 border-b border-slate-200 pb-4">
-                <div className="min-w-0">
-                  <p className="eyebrow">معيار · مختبر العلاقات التشريعية</p>
-                  <h2 className="mb-1 text-lg font-semibold text-slate-900">استكشف الروابط بين المواد</h2>
-                  <p className="muted-copy">قارن طرفي العلاقة المسجّلة وافحص أثرها على الخريطة.</p>
-                </div>
+    <div className="animate-enter">
+      <PageHeader
+        eyebrow="استكشاف الروابط القانونية"
+        title="الخريطة التشريعية"
+        description="تصفّح شبكة المواد والعلاقات الفعلية في قاعدة المعرفة، فعّل مختبر التعارضات، وتتبّع سلسلة الأثر التشريعي لأي مادة."
+        actions={
+          <div className="flex items-center gap-2">
+            <span className="count-pill">{nodes.length ? `${nodes.length.toLocaleString("ar")} عقدة` : "—"}</span>
+            <span className="count-pill">{edges.length ? `${edges.length.toLocaleString("ar")} رابط` : "—"}</span>
+          </div>
+        }
+      />
+
+      {graphState.loading ? (
+        <LoadingState label="جارٍ بناء خريطة الترابط التشريعي..." />
+      ) : graphState.error ? (
+        <ErrorState message={graphState.error} onRetry={() => window.location.reload()} />
+      ) : (
+        <Panel className="graph-workspace">
+          <div className={`conflict-lab-banner ${conflictLab ? "active" : ""}`}>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h2 className="m-0 text-base font-bold text-slate-900">مختبر التعارضات والتعديلات</h2>
+                <span className="badge badge-neutral">{visibleNodes.length.toLocaleString("ar")} مادة ظاهرة</span>
               </div>
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50/60 p-4">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <h2 className="m-0 text-base font-semibold text-slate-800">مختبر التعارضات</h2>
-                    <span className="badge badge-neutral">{visibleNodes.length.toLocaleString("ar")} مادة ظاهرة</span>
+              <p className="mb-2 mt-1 text-sm leading-6 text-slate-600">
+                يعزل المواد المرتبطة بإلغاء أو تعديل أو تداخل مسجّل لتسليط الضوء على نقاط التقاطع الحرجة. وجود علاقة تداخل لا يثبت وحده تعارضاً قانونياً.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {CONFLICT_RELATION_LIST.map((relation) => (
+                  <RelationBadge key={relation} relation={relation} />
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {hasActiveFilters && (
+                <Button variant="quiet" size="sm" icon="refresh" onClick={resetFilters}>
+                  إعادة ضبط الكل
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant={conflictLab ? "gold" : "secondary"}
+                icon="alert"
+                aria-pressed={conflictLab}
+                onClick={() => setConflictLab((active) => !active)}
+              >
+                {conflictLab ? "إيقاف مختبر التعارضات" : "تفعيل مختبر التعارضات"}
+              </Button>
+            </div>
+          </div>
+
+          <div className="graph-filter-bar">
+            <label className="search-field graph-search">
+              <Icon name="search" size={18} />
+              <input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") focusSearchResult(); }}
+                placeholder="ابحث برقم المادة أو اسم التشريع..."
+                aria-label="البحث في الرسم البياني"
+              />
+              <button type="button" onClick={focusSearchResult}>تركيز</button>
+            </label>
+            <label className="filter-field">
+              <span>التشريع</span>
+              <select value={legislationFilter} onChange={(event) => setLegislationFilter(event.target.value)}>
+                <option value="all">كل التشريعات</option>
+                {legislations.map((title) => <option key={title} value={title}>{title}</option>)}
+              </select>
+            </label>
+            <label className="filter-field">
+              <span>الحالة</span>
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                <option value="all">كل الحالات</option>
+                <option value="active">ساري</option>
+                <option value="amended">معدّل</option>
+                <option value="repealed">ملغى</option>
+              </select>
+            </label>
+            <label className="filter-field">
+              <span>العلاقة</span>
+              <select value={relationFilter} onChange={(event) => setRelationFilter(event.target.value)}>
+                <option value="all">كل العلاقات</option>
+                {relationTypes.map((relation) => <option key={relation} value={relation}>{relationLabel(relation)}</option>)}
+              </select>
+            </label>
+          </div>
+
+          <div className="graph-toolbar">
+            <span className="graph-hint">
+              <span className="health-dot" />
+              <span>انقر على أي عقدة مادة أو خط علاقة لفحص النصوص والأثر التشريعي</span>
+            </span>
+            <div className="toolbar-actions">
+              <button
+                type="button"
+                className={showEdgeLabels ? "active-tool" : ""}
+                aria-pressed={showEdgeLabels}
+                onClick={() => setShowEdgeLabels((v) => !v)}
+              >
+                <Icon name="tag" />
+                <span>{showEdgeLabels ? "إخفاء مسميات الروابط" : "إظهار مسميات الروابط"}</span>
+              </button>
+              <button
+                type="button"
+                className={expandedView ? "active-tool" : ""}
+                aria-pressed={expandedView}
+                onClick={() => setExpandedView((v) => !v)}
+              >
+                <Icon name={expandedView ? "minimize" : "expand"} />
+                <span>{expandedView ? "عرض جانبي" : "توسيع الخريطة"}</span>
+              </button>
+              <button type="button" title="ملاءمة العرض" onClick={fitGraph}>
+                <Icon name="fit" />
+                <span>ملاءمة</span>
+              </button>
+              <button type="button" title="إعادة ترتيب الرسم" onClick={resetGraph}>
+                <Icon name="refresh" />
+                <span>إعادة الترتيب</span>
+              </button>
+            </div>
+          </div>
+
+          <div className={`graph-layout ${expandedView ? "graph-expanded" : ""}`}>
+            <div className="graph-main">
+              <div className="graph-viewport">
+                <GraphCanvas
+                  graphData={graphState.data}
+                  showEdgeLabels={showEdgeLabels}
+                  graphRef={graphRef}
+                  onReady={onReady}
+                  onSelectNode={onSelectNode}
+                  onSelectEdge={onSelectEdge}
+                  onHoverChange={setHoveredInfo}
+                />
+                <div className="graph-hud-floating" aria-label="أدوات التكبير">
+                  <button type="button" aria-label="تكبير" title="تكبير" onClick={() => zoomBy(1.22)}>
+                    <Icon name="plus" size={16} />
+                  </button>
+                  <button type="button" aria-label="تصغير" title="تصغير" onClick={() => zoomBy(1 / 1.22)}>
+                    <Icon name="minus" size={16} />
+                  </button>
+                  <button type="button" aria-label="ملاءمة العرض" title="ملاءمة العرض" onClick={fitGraph}>
+                    <Icon name="fit" size={16} />
+                  </button>
+                </div>
+                {hoveredInfo && (
+                  <div className="graph-hover-pill" role="status">
+                    <span className="font-semibold">{hoveredInfo.title}</span>
+                    {hoveredInfo.meta && <span className="opacity-75">· {hoveredInfo.meta}</span>}
                   </div>
-                  <p className="mb-2 mt-1 text-sm leading-6 text-slate-600">
-                    يعرض المواد المرتبطة بإلغاء أو تعديل أو تداخل مسجّل. وجود علاقة تداخل لا يثبت وحده وقوع تعارض قانوني.
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {CONFLICT_RELATION_LIST.map((relation) => <RelationBadge key={relation} relation={relation} />)}
+                )}
+              </div>
+
+              <div className="graph-legend">
+                <span><i className="legend-node legend-active" />مادة سارية</span>
+                <span><i className="legend-node legend-amended" />معدّلة</span>
+                <span><i className="legend-node legend-repealed" />ملغاة</span>
+                <span><i className="legend-node legend-external" />مرجع خارجي</span>
+                <span><i className="legend-line legend-repeal" />إلغاء</span>
+                <span><i className="legend-line legend-amendment" />تعديل</span>
+                <span><i className="legend-line legend-overlap" />تداخل</span>
+                <span><i className="legend-line legend-contradiction" />تعارض</span>
+                <span><i className="legend-line legend-reference" />إحالة</span>
+              </div>
+
+              <details className="graph-accessible-list">
+                <summary>
+                  استعراض المواد الظاهرة في قائمة قابلة للتنقل ({visibleNodes.length.toLocaleString("ar")})
+                </summary>
+                <div>
+                  {visibleNodes.length ? (
+                    visibleNodes.map((node) => (
+                      <button type="button" key={node.id} onClick={() => onSelectNode(node.id)}>
+                        <span>{nodeLabel(node).replace("\n", " — ")}</span>
+                        <StatusBadge status={node.status} />
+                      </button>
+                    ))
+                  ) : (
+                    <p className="muted-copy p-3">لا توجد مواد تطابق المرشحات الحالية.</p>
+                  )}
+                </div>
+              </details>
+            </div>
+
+            <aside className="node-detail-panel" aria-live="polite">
+              {selectedEdge ? (
+                <div className="node-details">
+                  <p className="eyebrow">فحص طرفي العلاقة</p>
+                  <h2>
+                    {selectedEdge.source_label || (selectedEdgeSource ? nodeLabel(selectedEdgeSource).replace("\n", " — ") : DATA_UNAVAILABLE)}
+                    {" ← "}
+                    {selectedEdge.target_label || (selectedEdgeTarget ? nodeLabel(selectedEdgeTarget).replace("\n", " — ") : DATA_UNAVAILABLE)}
+                  </h2>
+                  <div className="my-2">
+                    <RelationBadge relation={selectedEdge.relation_type} />
+                  </div>
+                  <p className="result-prose !text-sm">{selectedEdge.note || "لا يوجد تفصيل إضافي للعلاقة."}</p>
+                  <div className="mt-4 grid gap-3">
+                    <RelationshipArticleCard
+                      node={selectedEdgeSource}
+                      fallbackLabel={selectedEdge.source_label}
+                      caption="المادة المصدر"
+                      onJump={onSelectNode}
+                    />
+                    <RelationshipArticleCard
+                      node={selectedEdgeTarget}
+                      fallbackLabel={selectedEdge.target_label}
+                      caption="المادة المرتبطة"
+                      onJump={onSelectNode}
+                    />
                   </div>
                 </div>
-                <button
-                  type="button"
-                  className="button button-secondary"
-                  aria-pressed={conflictLab}
-                  onClick={() => setConflictLab((active) => !active)}
-                  style={conflictLab ? { borderColor: "#bd9141", backgroundColor: "#fffaf0", color: "#735b2b" } : undefined}
-                >
-                  <Icon name="alert" size={18} />
-                  <span>{conflictLab ? "إيقاف مختبر التعارضات" : "تفعيل مختبر التعارضات"}</span>
-                </button>
-              </div>
-              <div className="graph-filter-bar">
-                <label className="search-field graph-search"><Icon name="search" size={19} /><input value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") focusSearchResult(); }} placeholder="ابحث برقم المادة أو اسم التشريع..." aria-label="البحث في الرسم البياني" /><button type="button" onClick={focusSearchResult}>بحث</button></label>
-                <label className="filter-field"><span>التشريع</span><select value={legislationFilter} onChange={(event) => setLegislationFilter(event.target.value)}><option value="all">كل التشريعات</option>{legislations.map((title) => <option key={title} value={title}>{title}</option>)}</select></label>
-                <label className="filter-field"><span>الحالة</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">كل الحالات</option><option value="active">ساري</option><option value="amended">معدّل</option><option value="repealed">ملغى</option></select></label>
-                <label className="filter-field"><span>العلاقة</span><select value={relationFilter} onChange={(event) => setRelationFilter(event.target.value)}><option value="all">كل العلاقات</option>{relationTypes.map((relation) => <option key={relation} value={relation}>{relationLabel(relation)}</option>)}</select></label>
-              </div>
-              <div className="graph-toolbar">
-                <span className="graph-hint"><span className="health-dot" />اضغط على عقدة أو علاقة لعرض التفاصيل</span>
-                <div className="toolbar-actions">
-                  <button type="button" aria-label="تكبير" title="تكبير" onClick={() => zoomBy(1.2)}><Icon name="plus" /></button>
-                  <button type="button" aria-label="تصغير" title="تصغير" onClick={() => zoomBy(1 / 1.2)}><Icon name="minus" /></button>
-                  <button type="button" title="ملاءمة العرض" onClick={fitGraph}><Icon name="fit" />ملاءمة العرض</button>
-                  <button type="button" title="إعادة ترتيب الرسم" onClick={resetGraph}><Icon name="refresh" />إعادة الترتيب</button>
-                </div>
-              </div>
-              <div className="graph-layout">
-                <div className="graph-main">
-                  <GraphCanvas graphData={graphState.data} graphRef={graphRef} onReady={onReady} onSelectNode={onSelectNode} onSelectEdge={onSelectEdge} />
-                  <div className="graph-legend">
-                    <span><i className="legend-node legend-active" />مادة سارية</span><span><i className="legend-node legend-amended" />معدّلة</span><span><i className="legend-node legend-repealed" />ملغاة</span><span><i className="legend-node legend-external" />مرجع خارجي</span>
-                    <span><i className="legend-line legend-repeal" />إلغاء</span><span><i className="legend-line legend-amendment" />تعديل</span><span><i className="legend-line legend-overlap" />تداخل</span><span><i className="legend-line legend-contradiction" />تعارض</span><span><i className="legend-line legend-reference" />إحالة</span>
-                  </div>
-                  <details className="graph-accessible-list">
-                    <summary>استعراض المواد الظاهرة في قائمة قابلة للتنقل ({visibleNodes.length.toLocaleString("ar")})</summary>
-                    <div>{visibleNodes.length ? visibleNodes.map((node) => <button type="button" key={node.id} onClick={() => onSelectNode(node.id)}><span>{nodeLabel(node).replace("\n", " — ")}</span><StatusBadge status={node.status} /></button>) : <p className="muted-copy p-3">لا توجد مواد تطابق المرشحات الحالية.</p>}</div>
-                  </details>
-                </div>
-                <aside className="node-detail-panel" aria-live="polite">
-                  {selectedEdge ? (
-                    <div className="node-details">
-                      <p className="eyebrow">فحص طرفي العلاقة</p>
-                      <h2>{selectedEdge.source_label || (selectedEdgeSource ? nodeLabel(selectedEdgeSource).replace("\n", " — ") : DATA_UNAVAILABLE)} ← {selectedEdge.target_label || (selectedEdgeTarget ? nodeLabel(selectedEdgeTarget).replace("\n", " — ") : DATA_UNAVAILABLE)}</h2>
-                      <RelationBadge relation={selectedEdge.relation_type} />
-                      <p className="result-prose">{selectedEdge.note || "لا يوجد تفصيل إضافي للعلاقة."}</p>
-                      <div className="mt-4 grid gap-3">
-                        <RelationshipArticleCard node={selectedEdgeSource} fallbackLabel={selectedEdge.source_label} caption="المادة المصدر" />
-                        <RelationshipArticleCard node={selectedEdgeTarget} fallbackLabel={selectedEdge.target_label} caption="المادة المرتبطة" />
+              ) : !selectedNode ? (
+                <div className="grid gap-4">
+                  <EmptyState
+                    title="اختر عقدة أو علاقة للفحص"
+                    description="انقر على أي مادة في الخريطة لعرض نصها القانوني وروابطها وتتبع سلسلة أثرها."
+                    icon="graph"
+                  />
+                  <div className="rounded-xl border border-slate-200 bg-white p-4 grid gap-2.5">
+                    <span className="text-xs font-bold text-slate-500">توزيع العقد الظاهرة حالياً</span>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="flex items-center justify-between rounded-lg bg-[#eaf5ef] px-3 py-2 text-[#1f6b4e]">
+                        <span>سارية</span>
+                        <strong>{visibleStats.active.toLocaleString("ar")}</strong>
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg bg-[#fdf4e3] px-3 py-2 text-[#8f5c14]">
+                        <span>معدّلة</span>
+                        <strong>{visibleStats.amended.toLocaleString("ar")}</strong>
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg bg-[#fceceb] px-3 py-2 text-[#a63a31]">
+                        <span>ملغاة</span>
+                        <strong>{visibleStats.repealed.toLocaleString("ar")}</strong>
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg bg-[#edf2fa] px-3 py-2 text-[#23477c]">
+                        <span>مراجع خارجية</span>
+                        <strong>{visibleStats.external.toLocaleString("ar")}</strong>
                       </div>
                     </div>
-                  ) : !selectedNode ? (
-                    <EmptyState title="اختر عقدة لعرض التفاصيل" description="انقر على مادة في الخريطة لعرض بياناتها وروابطها وأثرها." icon="graph" />
-                  ) : detailState.loading ? <LoadingState label="جارٍ تحميل تفاصيل المادة..." />
-                    : (
-                      <div className="node-details">
-                        <div className="node-detail-heading"><p className="eyebrow">{article?.kind === "external_ref" ? "مرجع تشريعي مرتبط" : "بيانات المادة"}</p><StatusBadge status={article?.status} /></div>
-                        <h2>{article?.article_number != null ? `المادة ${article.article_number}` : article?.label || "مرجع تشريعي"}</h2>
-                        <h3>{article?.legislation_title || "تشريع غير محدد"}</h3>
-                        <div className="article-meta">                        {article?.legislation_type && <span>{legislationTypeLabel(article.legislation_type)}</span>}{article?.effective_date && <span><Icon name="calendar" size={15} />{article.effective_date}</span>}<SimilarityBadge article={article} /></div>
-                        {topicTags.length > 0 && <div className="tag-list">{topicTags.map((tag) => <span className="topic-tag" key={tag}>{tag}</span>)}</div>}
-                        {detailState.error && <div className="inline-error" role="alert">{detailState.error}</div>}
-                        {article?.text && <div className="legal-text node-legal-text" dir="rtl" lang="ar">{article.text}</div>}
-                        <OfficialSource className="source-row" sourceUrl={article?.source_url} sourceLabel={article?.source_label} officialSource={article?.official_source} />
-                        {detailState.neighbors.length > 0 && <section className="node-subsection"><h4>مواد مرتبطة</h4>{detailState.neighbors.slice(0, 8).map((edge, index) => {
-                          const relatedId = edge.source === article?.id ? edge.target : edge.source;
-                          const relatedNode = nodeMap.get(String(relatedId));
-                          return <button className="related-row" key={`${edge.source}-${edge.target}-${index}`} type="button" disabled={!relatedNode || relatedNode.kind === "external_ref"} onClick={() => onSelectNode(relatedId)}><span>{relatedNode ? nodeLabel(relatedNode).replace("\n", " — ") : edge.source_label || edge.target_label}</span><RelationBadge relation={edge.relation_type} /></button>;
-                        })}</section>}
-                        <div className="impact-action-row"><Button variant="secondary" icon="timeline" onClick={runImpact} disabled={impactLoading}>{impactLoading ? "جارٍ تتبّع الأثر..." : "تتبّع الأثر التشريعي"}</Button></div>
-                        {impactError && <div className="inline-error" role="alert">{impactError}</div>}
-                        {detailState.impact && <section className="node-subsection"><h4>سلسلة الأثر <span className="count-pill">{impacted.length.toLocaleString("ar")}</span></h4>
-                          {impacted.length ? <div className="impact-nodes">{impacted.map((node) => <button key={node.id} type="button" className="impact-node-link" onClick={() => nodeMap.has(String(node.id)) && onSelectNode(node.id)}>{nodeLabel(node).replace("\n", " — ")}</button>)}</div> : <p className="muted-copy">لا توجد مواد متأثرة مسجّلة.</p>}
-                          {Array.isArray(paths) && paths.length > 0 && <div className="impact-paths">{paths.slice(0, 12).map((path, index) => <div key={index}><span>{path.from || "مادة"}</span><Icon name="arrow" size={14} /><span>{path.to || "مرجع"}</span><RelationBadge relation={path.relation_type} /></div>)}</div>}
-                        </section>}
-                      </div>
+                  </div>
+                </div>
+              ) : detailState.loading ? (
+                <LoadingState label="جارٍ تحميل تفاصيل المادة..." />
+              ) : (
+                <div className="node-details">
+                  <div className="node-detail-heading">
+                    <p className="eyebrow !m-0">{article?.kind === "external_ref" ? "مرجع تشريعي مرتبط" : "ملف المادة"}</p>
+                    <StatusBadge status={article?.status} />
+                  </div>
+                  <h2>{article?.article_number != null ? `المادة ${article.article_number}` : article?.label || "مرجع تشريعي"}</h2>
+                  <h3>{article?.legislation_title || "تشريع غير محدد"}</h3>
+
+                  <div className="article-meta">
+                    {article?.legislation_type && <span className="badge badge-neutral">{legislationTypeLabel(article.legislation_type)}</span>}
+                    {article?.effective_date && (
+                      <span className="badge badge-neutral">
+                        <Icon name="calendar" size={13} />
+                        <bdi dir="ltr">{article.effective_date}</bdi>
+                      </span>
                     )}
-                </aside>
-              </div>
-            </Panel>
-          )}
+                    <SimilarityBadge article={article} showMeter />
+                  </div>
+
+                  {topicTags.length > 0 && (
+                    <div className="tag-list">
+                      {topicTags.map((tag) => <span className="topic-tag" key={tag}>{tag}</span>)}
+                    </div>
+                  )}
+
+                  {detailState.error && (
+                    <div className="inline-error" role="alert">
+                      <Icon name="alert" size={16} />
+                      <span>{detailState.error}</span>
+                    </div>
+                  )}
+
+                  {article?.text && (
+                    <div>
+                      <div className="flex justify-end mb-1">
+                        <button type="button" className="text-button !text-xs" onClick={copySelectedText}>
+                          <Icon name={copiedArticle ? "check" : "copy"} size={13} />
+                          <span>{copiedArticle ? "تم النسخ" : "نسخ نص المادة"}</span>
+                        </button>
+                      </div>
+                      <div className="legal-text node-legal-text" dir="rtl" lang="ar">{article.text}</div>
+                    </div>
+                  )}
+
+                  <OfficialSource
+                    className="source-row"
+                    sourceUrl={article?.source_url}
+                    sourceLabel={article?.source_label}
+                    officialSource={article?.official_source}
+                  />
+
+                  {detailState.neighbors.length > 0 && (
+                    <section className="node-subsection">
+                      <h4>
+                        <span>مواد وعقد مرتبطة</span>
+                        <span className="count-pill">{detailState.neighbors.length.toLocaleString("ar")}</span>
+                      </h4>
+                      {detailState.neighbors.slice(0, 8).map((edge, index) => {
+                        const relatedId = edge.source === article?.id ? edge.target : edge.source;
+                        const relatedNode = nodeMap.get(String(relatedId));
+                        return (
+                          <button
+                            className="related-row"
+                            key={`${edge.source}-${edge.target}-${index}`}
+                            type="button"
+                            disabled={!relatedNode || relatedNode.kind === "external_ref"}
+                            onClick={() => onSelectNode(relatedId)}
+                          >
+                            <span>{relatedNode ? nodeLabel(relatedNode).replace("\n", " — ") : edge.source_label || edge.target_label}</span>
+                            <RelationBadge relation={edge.relation_type} />
+                          </button>
+                        );
+                      })}
+                    </section>
+                  )}
+
+                  <div className="impact-action-row">
+                    <Button variant="secondary" icon="timeline" onClick={runImpact} disabled={impactLoading}>
+                      {impactLoading ? "جارٍ تتبّع الأثر..." : "تتبّع الأثر التشريعي"}
+                    </Button>
+                  </div>
+
+                  {impactError && (
+                    <div className="inline-error" role="alert">
+                      <Icon name="alert" size={16} />
+                      <span>{impactError}</span>
+                    </div>
+                  )}
+
+                  {detailState.impact && (
+                    <section className="node-subsection">
+                      <h4>
+                        <span>سلسلة الأثر التشريعي</span>
+                        <span className="count-pill">{impacted.length.toLocaleString("ar")}</span>
+                      </h4>
+                      {impacted.length ? (
+                        <div className="impact-nodes">
+                          {impacted.map((node) => (
+                            <button
+                              key={node.id}
+                              type="button"
+                              className="impact-node-link"
+                              onClick={() => nodeMap.has(String(node.id)) && onSelectNode(node.id)}
+                            >
+                              {nodeLabel(node).replace("\n", " — ")}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="muted-copy">لا توجد مواد متأثرة مسجّلة.</p>
+                      )}
+
+                      {outdatedRegs.length > 0 && (
+                        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                          <strong className="block text-xs text-amber-900 mb-1.5">
+                            أنظمة فرعية قد تتأثر بالتغيير ({outdatedRegs.length.toLocaleString("ar")})
+                          </strong>
+                          <div className="grid gap-1">
+                            {outdatedRegs.map((reg) => (
+                              <button
+                                key={reg.id}
+                                type="button"
+                                className="text-right text-xs text-amber-800 hover:underline"
+                                onClick={() => nodeMap.has(String(reg.id)) && onSelectNode(reg.id)}
+                              >
+                                • {nodeLabel(reg).replace("\n", " — ")}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {Array.isArray(paths) && paths.length > 0 && (
+                        <div className="impact-paths">
+                          {paths.slice(0, 12).map((path, index) => (
+                            <div key={index}>
+                              <span>{path.from || "مادة"}</span>
+                              <Icon name="arrow" size={13} />
+                              <span>{path.to || "مرجع"}</span>
+                              <RelationBadge relation={path.relation_type} />
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  )}
+                </div>
+              )}
+            </aside>
+          </div>
+        </Panel>
+      )}
 
       <Panel className="changes-workspace">
-        <div className="section-heading"><div><p className="eyebrow">تتبّع الأثر القانوني</p><h2>التغييرات التشريعية</h2><p className="muted-copy">علاقات الإلغاء والتعديل والتداخل كما أعادتها الخدمة.</p></div></div>
-        {changesError ? <div className="inline-error" role="alert">{changesError}</div> : !changes ? <LoadingState label="جارٍ تحميل التغييرات..." /> : (
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">تتبّع الأثر القانوني</p>
+            <h2>سجل التغييرات التشريعية</h2>
+            <p className="muted-copy">علاقات الإلغاء والتعديل والتداخل كما أعادتها الخدمة. انقر على "تحديد" لعرض المادة على الخريطة.</p>
+          </div>
+          {changes && (
+            <div className="chip-list" role="tablist" aria-label="تصفية التغييرات">
+              {[
+                ["all", "الكل"],
+                ["repeals", "الإلغاءات"],
+                ["amendments", "التعديلات"],
+                ["overlaps", "التداخلات"],
+                ...(hasContradictions ? [["contradictions", "التعارضات"]] : [])
+              ].map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  aria-selected={changeTab === key}
+                  className={`sample-chip ${changeTab === key ? "active-chip" : ""}`}
+                  onClick={() => setChangeTab(key)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {changesError ? (
+          <div className="inline-error" role="alert">{changesError}</div>
+        ) : !changes ? (
+          <LoadingState label="جارٍ تحميل التغييرات..." />
+        ) : (
           <div className="graph-changes-grid">
-            <ChangeGroup title="الإلغاءات" items={changes.repeals} className="tone-danger" nodeMap={nodeMap} />
-            <ChangeGroup title="التعديلات" items={changes.amendments} className="tone-warning" nodeMap={nodeMap} />
-            <ChangeGroup title="التداخلات" items={changes.overlaps} className="tone-info" nodeMap={nodeMap} />
+            {(changeTab === "all" || changeTab === "repeals") && (
+              <ChangeGroup title="الإلغاءات" items={changes.repeals} className="tone-danger" nodeMap={nodeMap} onSelectArticle={onSelectNode} />
+            )}
+            {(changeTab === "all" || changeTab === "amendments") && (
+              <ChangeGroup title="التعديلات" items={changes.amendments} className="tone-warning" nodeMap={nodeMap} onSelectArticle={onSelectNode} />
+            )}
+            {(changeTab === "all" || changeTab === "overlaps") && (
+              <ChangeGroup title="التداخلات" items={changes.overlaps} className="tone-info" nodeMap={nodeMap} onSelectArticle={onSelectNode} />
+            )}
+            {hasContradictions && (changeTab === "all" || changeTab === "contradictions") && (
+              <ChangeGroup title="التعارضات" items={changes.contradictions} className="tone-danger" nodeMap={nodeMap} onSelectArticle={onSelectNode} />
+            )}
           </div>
         )}
       </Panel>
-    </>
+    </div>
   );
 }

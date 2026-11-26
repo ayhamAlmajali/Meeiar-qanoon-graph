@@ -1,7 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePageActions } from "../context/PageActionsContext";
 import { api, getErrorMessage } from "../services/api";
-import { Button, EmptyState, ErrorState, Icon, legislationTypeLabel, LoadingState, OfficialSource, PageHeader, Panel, StatusBadge } from "../components/common/UI";
+import {
+  Button,
+  EmptyState,
+  ErrorState,
+  Icon,
+  legislationTypeLabel,
+  LoadingState,
+  OfficialSource,
+  PageHeader,
+  Panel,
+  SkeletonCards,
+  StatusBadge
+} from "../components/common/UI";
 
 const evolutionTypeMeta = {
   repeals: ["إلغاء", "repeals"],
@@ -49,26 +61,48 @@ function EvolutionStage({ stage, onOpenArticle }) {
 
   return (
     <article className="evolution-stage">
-      <time className="evolution-stage-date" dir={dateIsNumeric ? "ltr" : "rtl"}>{date}</time>
+      <time className="evolution-stage-date" dir={dateIsNumeric ? "ltr" : "rtl"}>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-[#fbfaf7] px-3 py-1">
+          <Icon name="calendar" size={13} />
+          <span>{date}</span>
+        </span>
+      </time>
       <div className="evolution-stage-card">
         <div className="evolution-stage-heading">
-          <div><span className={`evolution-kind evolution-kind-${change[1]}`}>{change[0]}</span>{stage.status && <StatusBadge status={stage.status} />}</div>
+          <div>
+            <span className={`evolution-kind evolution-kind-${change[1]}`}>{change[0]}</span>
+            {stage.status && <StatusBadge status={stage.status} />}
+          </div>
           <h3>{articleNumber ? `المادة ${articleNumber} — ${title}` : title}</h3>
         </div>
         {reference && <p className="evolution-reference"><strong>المادة المرتبطة:</strong> {reference}</p>}
         {note && <p className="evolution-note">{note}</p>}
         {(beforeText || currentText) && (
           <details className="evolution-text-comparison">
-            <summary>عرض النصوص المرتبطة بالتطور</summary>
+            <summary>مقارنة النصوص المرتبطة بهذا التطور</summary>
             <div>
-              {beforeText && <section><strong>النص السابق أو المرتبط</strong><p dir="rtl" lang="ar">{beforeText}</p></section>}
-              {currentText && <section><strong>النص الحالي</strong><p dir="rtl" lang="ar">{currentText}</p></section>}
+              {beforeText && (
+                <section>
+                  <strong>النص السابق أو المرتبط</strong>
+                  <p dir="rtl" lang="ar">{beforeText}</p>
+                </section>
+              )}
+              {currentText && (
+                <section>
+                  <strong>النص الحالي</strong>
+                  <p dir="rtl" lang="ar">{currentText}</p>
+                </section>
+              )}
             </div>
           </details>
         )}
         <div className="evolution-stage-actions">
           <OfficialSource sourceUrl={stage.source_url} sourceLabel={stage.source_label} />
-          {stage.article_id && <Button variant="secondary" icon="book" onClick={() => onOpenArticle(stage.article_id)}>عرض تفاصيل المادة</Button>}
+          {stage.article_id && (
+            <Button variant="secondary" size="sm" icon="book" onClick={() => onOpenArticle(stage.article_id)}>
+              تفاصيل المادة
+            </Button>
+          )}
         </div>
       </div>
     </article>
@@ -175,7 +209,11 @@ export default function TimelinePage() {
     };
   }, [query, reloadVersion]);
 
-  const types = useMemo(() => [...new Set(state.articles.map((article) => article.legislation_type).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "ar")), [state.articles]);
+  const types = useMemo(
+    () => [...new Set(state.articles.map((article) => article.legislation_type).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "ar")),
+    [state.articles]
+  );
+
   const filtered = useMemo(() => state.articles.filter((article) => {
     if (status !== "all" && articleStatusKey(article.status) !== status) return false;
     if (type !== "all" && article.legislation_type !== type) return false;
@@ -200,6 +238,7 @@ export default function TimelinePage() {
     });
     return { years: [...groups.entries()].sort(([a], [b]) => Number(b) - Number(a)), undated };
   }, [filtered]);
+
   const availableLegislations = Array.isArray(evolutionState.data?.available_legislations)
     ? evolutionState.data.available_legislations
     : [];
@@ -219,85 +258,238 @@ export default function TimelinePage() {
     void loadEvolution();
   };
 
+  const hasArchiveFilters = Boolean(query.trim() || status !== "all" || type !== "all" || dateFrom || dateTo);
+  const resetArchiveFilters = () => {
+    setQuery("");
+    setStatus("all");
+    setType("all");
+    setDateFrom("");
+    setDateTo("");
+  };
+
   return (
-    <>
-      <PageHeader eyebrow="التطور الزمني للتشريعات" title="الجدول الزمني" description="استكشف المواد المؤرخة بحسب تاريخ النفاذ المسجل في بيانات الخدمة. التواريخ غير المتاحة لا تُستنتج." actions={<span className="count-pill">{filtered.length.toLocaleString("ar")} مادة</span>} />
+    <div className="animate-enter">
+      <PageHeader
+        eyebrow="التطور الزمني للتشريعات"
+        title="الجدول الزمني"
+        description="تتبّع مراحل تعديل وإلغاء التشريعات وتصفّح المواد المؤرخة بحسب تاريخ النفاذ المسجل في الخدمة. التواريخ غير المتاحة لا تُستنتج."
+        actions={<span className="count-pill">{filtered.length.toLocaleString("ar")} مادة</span>}
+      />
+
       <Panel className="evolution-panel" aria-live="polite">
         <div className="section-heading evolution-heading">
-          <div><p className="eyebrow">Legislative Evolution · التطور التشريعي</p><h2>تطور التشريع وعلاقاته</h2><p className="muted-copy">تابع مراحل الإلغاء والتعديل والتداخل أو صدور التشريع، مع الروابط والمراجع التي توفرها الخدمة.</p></div>
+          <div>
+            <p className="eyebrow">التطور التشريعي · Legislative Evolution</p>
+            <h2>تطور التشريع وعلاقاته عبر الزمن</h2>
+            <p className="muted-copy">تابع مراحل الإلغاء والتعديل والتداخل أو صدور التشريع، مع مقارنة النصوص السابقة والحالية.</p>
+          </div>
         </div>
+
         <form className="evolution-filters" onSubmit={submitEvolutionFilters}>
-          <label className="evolution-filter-field" htmlFor="evolution-legislation"><span>التشريع</span>
-            <select id="evolution-legislation" value={selectedLegislation} onChange={(event) => setSelectedLegislation(event.target.value)} disabled={evolutionState.loading || availableLegislations.length === 0}>
-              {availableLegislations.length ? availableLegislations.map((item) => <option key={item.legislation_title} value={item.legislation_title}>{item.legislation_title} ({Number(item.article_count || 0).toLocaleString("ar")} مادة)</option>) : <option value="">لا توجد تشريعات متاحة</option>}
+          <label className="evolution-filter-field" htmlFor="evolution-legislation">
+            <span>التشريع</span>
+            <select
+              id="evolution-legislation"
+              value={selectedLegislation}
+              onChange={(event) => setSelectedLegislation(event.target.value)}
+              disabled={evolutionState.loading || availableLegislations.length === 0}
+            >
+              {availableLegislations.length ? (
+                availableLegislations.map((item) => (
+                  <option key={item.legislation_title} value={item.legislation_title}>
+                    {item.legislation_title} ({Number(item.article_count || 0).toLocaleString("ar")} مادة)
+                  </option>
+                ))
+              ) : (
+                <option value="">لا توجد تشريعات متاحة</option>
+              )}
             </select>
           </label>
-          <label className="evolution-filter-field" htmlFor="evolution-article"><span>رقم المادة (اختياري)</span>
-            <input id="evolution-article" type="text" value={evolutionArticle} onChange={(event) => setEvolutionArticle(event.target.value)} placeholder="مثال: 4" disabled={evolutionState.loading || availableLegislations.length === 0} />
+
+          <label className="evolution-filter-field" htmlFor="evolution-article">
+            <span>رقم المادة (اختياري)</span>
+            <input
+              id="evolution-article"
+              type="text"
+              value={evolutionArticle}
+              onChange={(event) => setEvolutionArticle(event.target.value)}
+              placeholder="مثال: 4"
+              disabled={evolutionState.loading || availableLegislations.length === 0}
+            />
           </label>
+
           <div className="evolution-filter-actions">
-            <Button type="submit" icon="search" disabled={evolutionState.loading || !selectedLegislation.trim()}>عرض التطور</Button>
-            <Button type="button" variant="secondary" icon="refresh" disabled={evolutionState.loading} onClick={resetEvolutionFilters}>إعادة الضبط</Button>
+            <Button type="submit" icon="search" disabled={evolutionState.loading || !selectedLegislation.trim()}>
+              عرض التطور
+            </Button>
+            <Button type="button" variant="secondary" icon="refresh" disabled={evolutionState.loading} onClick={resetEvolutionFilters}>
+              إعادة الضبط
+            </Button>
           </div>
         </form>
-        {evolutionState.loading ? <LoadingState label="جارٍ تحميل مراحل التطور التشريعي..." />
-          : evolutionState.error ? <ErrorState message={evolutionState.error} onRetry={() => loadEvolution(selectedLegislation, evolutionArticle)} />
-            : evolutionState.data ? (
-              <>
-                <div className="evolution-results-meta"><span>التشريع المحدد: <strong>{evolutionState.data.selected_legislation || selectedLegislation}</strong></span><span>{evolutionStages.length.toLocaleString("ar")} مرحلة</span></div>
-                {evolutionStages.length ? <div className="evolution-stage-list">{evolutionStages.map((stage, index) => <EvolutionStage key={`${stage.article_id || stage.change_type || "stage"}-${stage.date || "undated"}-${index}`} stage={stage} onOpenArticle={openArticle} />)}</div>
-                  : <EmptyState title="لا توجد مراحل تطور مسجلة" description="لم تُرجع الخدمة مراحل لهذا التشريع أو المادة المحددة." icon="timeline" />}
-              </>
-            ) : <EmptyState title="لا تتوفر بيانات التطور التشريعي" description="تعذّر تحميل التشريعات المتاحة حالياً." icon="timeline" />}
-      </Panel>
-      <Panel className="timeline-filters">
-        <label className="search-field timeline-search"><Icon name="search" size={19} /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ابحث باسم التشريع أو رقم المادة أو نصها..." aria-label="البحث في المواد" /></label>
-        <label className="filter-field"><span>الحالة التشريعية</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">كل الحالات</option><option value="active">ساري</option><option value="amended">معدّل</option><option value="repealed">ملغى</option></select></label>
-        <label className="filter-field"><span>نوع التشريع</span><select value={type} onChange={(event) => setType(event.target.value)}><option value="all">كل الأنواع</option>{types.map((item) => <option key={item} value={item}>{legislationTypeLabel(item)}</option>)}</select></label>
-        <label className="filter-field date-filter"><span>من تاريخ</span><input type="date" dir="ltr" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></label>
-        <label className="filter-field date-filter"><span>إلى تاريخ</span><input type="date" dir="ltr" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></label>
+
+        {evolutionState.loading ? (
+          <div className="grid gap-3">
+            <LoadingState label="جارٍ تحميل مراحل التطور التشريعي..." />
+            <SkeletonCards count={2} />
+          </div>
+        ) : evolutionState.error ? (
+          <ErrorState message={evolutionState.error} onRetry={() => loadEvolution(selectedLegislation, evolutionArticle)} />
+        ) : evolutionState.data ? (
+          <>
+            <div className="evolution-results-meta">
+              <span>التشريع المحدد: <strong>{evolutionState.data.selected_legislation || selectedLegislation}</strong></span>
+              <span className="count-pill">{evolutionStages.length.toLocaleString("ar")} مرحلة</span>
+            </div>
+            {evolutionStages.length ? (
+              <div className="evolution-stage-list">
+                {evolutionStages.map((stage, index) => (
+                  <EvolutionStage
+                    key={`${stage.article_id || stage.change_type || "stage"}-${stage.date || "undated"}-${index}`}
+                    stage={stage}
+                    onOpenArticle={openArticle}
+                  />
+                ))}
+              </div>
+            ) : (
+              <EmptyState title="لا توجد مراحل تطور مسجلة" description="لم تُرجع الخدمة مراحل لهذا التشريع أو المادة المحددة." icon="timeline" />
+            )}
+          </>
+        ) : (
+          <EmptyState title="لا تتوفر بيانات التطور التشريعي" description="تعذّر تحميل التشريعات المتاحة حالياً." icon="timeline" />
+        )}
       </Panel>
 
-      {state.loading ? <LoadingState label="جارٍ تحميل المواد وترتيبها زمنياً..." />
-        : state.error ? <ErrorState message={state.error} onRetry={() => setReloadVersion((value) => value + 1)} />
-          : filtered.length ? (
-            <div className="timeline-groups">
-              {grouped.years.map(([year, articles], groupIndex) => (
-                <details className="timeline-year" key={year} open={groupIndex === 0}>
-                  <summary><span className="year-marker"><Icon name="calendar" size={20} /></span><strong>{year}</strong><span>{articles.length.toLocaleString("ar")} مادة مؤرخة</span></summary>
-                  <div className="timeline-legislation-groups">
-                    {groupByLegislation(articles).map(([title, legislationArticles], legislationIndex) => (
-                      <details className="timeline-legislation" key={title} open={groupIndex === 0 && legislationIndex === 0}>
-                        <summary><span>{title}</span><small>{legislationTypeLabel(legislationArticles[0]?.legislation_type)}</small><b>{legislationArticles.length.toLocaleString("ar")} مادة</b></summary>
-                        <div className="timeline-items">
-                          {legislationArticles.map((article, index) => (
-                            <article className="timeline-item" key={article.id || `${article.article_number}-${index}`}>
-                              <span className="timeline-point" />
-                              <div className="timeline-date"><bdi dir="ltr">{article.effective_date}</bdi></div>
-                              <button className="timeline-article" type="button" onClick={() => openArticle(article.id || article.article_number)}>
-                                <span className="timeline-article-title"><strong>{article.legislation_title || "تشريع غير محدد"}</strong><span>المادة {article.article_number ?? "—"}</span></span>
-                                <span className="timeline-article-meta"><span>{legislationTypeLabel(article.legislation_type)}</span><StatusBadge status={article.status} /></span>
-                              </button>
-                            </article>
-                          ))}
-                        </div>
-                      </details>
-                    ))}
-                  </div>
-                </details>
-              ))}
-              {grouped.undated.length > 0 && (
-                <details className="timeline-year undated-group">
-                  <summary><span className="year-marker"><Icon name="book" size={20} /></span><strong>تاريخ النفاذ غير متاح</strong><span>{grouped.undated.length.toLocaleString("ar")} مادة</span></summary>
-                  <div className="timeline-items">{grouped.undated.map((article, index) => (
-                    <article className="timeline-item" key={article.id || index}><span className="timeline-point" /><span className="timeline-date">غير مؤرخ</span>
-                      <button className="timeline-article" type="button" onClick={() => openArticle(article.id || article.article_number)}><span className="timeline-article-title"><strong>{article.legislation_title || "تشريع غير محدد"}</strong><span>المادة {article.article_number ?? "—"} · {legislationTypeLabel(article.legislation_type)}</span></span><StatusBadge status={article.status} /></button>
-                    </article>
-                  ))}</div>
-                </details>
-              )}
-            </div>
-          ) : <Panel><EmptyState title="لا توجد مواد مطابقة" description="جرّب إزالة بعض عوامل التصفية أو تغيير عبارة البحث." icon="calendar" /></Panel>}
-    </>
+      <Panel className="timeline-filters">
+        <label className="search-field timeline-search">
+          <Icon name="search" size={18} />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="ابحث باسم التشريع أو رقم المادة أو نصها..."
+            aria-label="البحث في المواد"
+          />
+        </label>
+        <label className="filter-field">
+          <span>الحالة التشريعية</span>
+          <select value={status} onChange={(event) => setStatus(event.target.value)}>
+            <option value="all">كل الحالات</option>
+            <option value="active">ساري</option>
+            <option value="amended">معدّل</option>
+            <option value="repealed">ملغى</option>
+          </select>
+        </label>
+        <label className="filter-field">
+          <span>نوع التشريع</span>
+          <select value={type} onChange={(event) => setType(event.target.value)}>
+            <option value="all">كل الأنواع</option>
+            {types.map((item) => <option key={item} value={item}>{legislationTypeLabel(item)}</option>)}
+          </select>
+        </label>
+        <label className="filter-field date-filter">
+          <span>من تاريخ</span>
+          <input type="date" dir="ltr" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
+        </label>
+        <label className="filter-field date-filter">
+          <span>إلى تاريخ</span>
+          <input type="date" dir="ltr" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
+        </label>
+        {hasArchiveFilters && (
+          <div className="col-span-full flex items-center justify-between pt-2 border-t border-slate-100">
+            <span className="text-xs text-slate-600">
+              عرض <strong>{filtered.length.toLocaleString("ar")}</strong> مادة مطابقة للمرشحات الحالية
+            </span>
+            <Button type="button" variant="quiet" size="sm" icon="refresh" onClick={resetArchiveFilters}>
+              مسح المرشحات
+            </Button>
+          </div>
+        )}
+      </Panel>
+
+      {state.loading ? (
+        <LoadingState label="جارٍ تحميل المواد وترتيبها زمنياً..." />
+      ) : state.error ? (
+        <ErrorState message={state.error} onRetry={() => setReloadVersion((value) => value + 1)} />
+      ) : filtered.length ? (
+        <div className="timeline-groups">
+          {grouped.years.map(([year, articles], groupIndex) => (
+            <details className="timeline-year" key={year} open={groupIndex === 0}>
+              <summary>
+                <span className="year-marker"><Icon name="calendar" size={19} /></span>
+                <strong>{year}</strong>
+                <span>{articles.length.toLocaleString("ar")} مادة مؤرخة</span>
+              </summary>
+              <div className="timeline-legislation-groups">
+                {groupByLegislation(articles).map(([title, legislationArticles], legislationIndex) => (
+                  <details className="timeline-legislation" key={title} open={groupIndex === 0 && legislationIndex === 0}>
+                    <summary>
+                      <span>{title}</span>
+                      <small>{legislationTypeLabel(legislationArticles[0]?.legislation_type)}</small>
+                      <b>{legislationArticles.length.toLocaleString("ar")} مادة</b>
+                    </summary>
+                    <div className="timeline-items">
+                      {legislationArticles.map((article, index) => (
+                        <article className="timeline-item" key={article.id || `${article.article_number}-${index}`}>
+                          <span className="timeline-point" />
+                          <div className="timeline-date"><bdi dir="ltr">{article.effective_date}</bdi></div>
+                          <button
+                            className="timeline-article"
+                            type="button"
+                            onClick={() => openArticle(article.id || article.article_number)}
+                          >
+                            <span className="timeline-article-title">
+                              <strong>{article.legislation_title || "تشريع غير محدد"}</strong>
+                              <span>المادة {article.article_number ?? "—"}</span>
+                            </span>
+                            <span className="timeline-article-meta">
+                              <span>{legislationTypeLabel(article.legislation_type)}</span>
+                              <StatusBadge status={article.status} />
+                            </span>
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  </details>
+                ))}
+              </div>
+            </details>
+          ))}
+
+          {grouped.undated.length > 0 && (
+            <details className="timeline-year undated-group">
+              <summary>
+                <span className="year-marker"><Icon name="book" size={19} /></span>
+                <strong>تاريخ النفاذ غير متاح</strong>
+                <span>{grouped.undated.length.toLocaleString("ar")} مادة</span>
+              </summary>
+              <div className="timeline-items">
+                {grouped.undated.map((article, index) => (
+                  <article className="timeline-item" key={article.id || index}>
+                    <span className="timeline-point" />
+                    <span className="timeline-date">غير مؤرخ</span>
+                    <button
+                      className="timeline-article"
+                      type="button"
+                      onClick={() => openArticle(article.id || article.article_number)}
+                    >
+                      <span className="timeline-article-title">
+                        <strong>{article.legislation_title || "تشريع غير محدد"}</strong>
+                        <span>المادة {article.article_number ?? "—"} · {legislationTypeLabel(article.legislation_type)}</span>
+                      </span>
+                      <StatusBadge status={article.status} />
+                    </button>
+                  </article>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      ) : (
+        <Panel>
+          <EmptyState title="لا توجد مواد مطابقة" description="جرّب إزالة بعض عوامل التصفية أو تغيير عبارة البحث." icon="calendar" />
+        </Panel>
+      )}
+    </div>
   );
 }
