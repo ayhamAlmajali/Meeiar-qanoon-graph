@@ -372,20 +372,26 @@ class QanoonGraphEngine:
                 sim_lookup = {}
 
         if not sim_lookup:
-            q_tokens = set(re.findall(r"[\w\u0600-\u06FF]{2,}", q_norm))
-            if q_tokens:
-                for art in self.articles:
-                    aid = str(art.get("id") or "")
-                    if not aid:
-                        continue
-                    art_text = normalize_arabic(
-                        f"{art.get('title', '')} {art.get('legislation_title', '')} {art.get('text', '')}"
-                    )
-                    art_tokens = set(re.findall(r"[\w\u0600-\u06FF]{2,}", art_text))
-                    if art_tokens:
-                        overlap = len(q_tokens & art_tokens) / max(len(q_tokens), 1)
-                        if overlap > 0:
-                            sim_lookup[aid] = round(min(0.95, 0.35 + 0.60 * overlap), 4)
+            try:
+                import re as _re
+                q_tokens = set(_re.findall(r"[\w\u0600-\u06FF]{2,}", normalize_text(query)))
+                if q_tokens:
+                    for art in self.articles:
+                        aid = str(art.get("id") or "")
+                        if not aid:
+                            continue
+                        raw_txt = " ".join([
+                            str(art.get("title") or ""),
+                            str(art.get("legislation_title") or ""),
+                            str(art.get("text") or ""),
+                        ])
+                        art_tokens = set(_re.findall(r"[\w\u0600-\u06FF]{2,}", normalize_text(raw_txt)))
+                        if art_tokens:
+                            overlap = len(q_tokens & art_tokens) / max(len(q_tokens), 1)
+                            if overlap > 0:
+                                sim_lookup[aid] = round(min(0.95, 0.35 + 0.60 * overlap), 4)
+            except Exception:
+                sim_lookup = {}
 
         stop_tokens = {
             "في", "من", "على", "الي", "عن", "مع", "ما", "هو", "هي", "هل",
