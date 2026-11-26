@@ -1,3 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 # Python >= 3.11
 beautifulsoup4==4.15.0
 fastapi==0.165.0
