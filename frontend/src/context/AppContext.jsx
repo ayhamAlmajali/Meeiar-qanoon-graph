@@ -12,11 +12,14 @@ export function AppProvider({ children }) {
   useEffect(() => {
     let active = true;
     let controller;
+    let timeoutId;
 
     const checkHealth = async () => {
       controller = new AbortController();
+      timeoutId = window.setTimeout(() => controller.abort(), 15000);
       try {
         const result = await api.health({ signal: controller.signal });
+        window.clearTimeout(timeoutId);
         if (active) {
           setHealth({
             status: result?.status === "ok" ? "online" : "degraded",
@@ -24,7 +27,8 @@ export function AppProvider({ children }) {
           });
         }
       } catch (error) {
-        if (active && error?.name !== "AbortError") {
+        window.clearTimeout(timeoutId);
+        if (active) {
           setHealth({ status: "offline", checkedAt: Date.now() });
         }
       }
@@ -34,6 +38,7 @@ export function AppProvider({ children }) {
     const interval = window.setInterval(checkHealth, 30000);
     return () => {
       active = false;
+      window.clearTimeout(timeoutId);
       window.clearInterval(interval);
       controller?.abort();
     };

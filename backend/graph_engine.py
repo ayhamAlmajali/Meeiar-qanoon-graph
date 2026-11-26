@@ -358,17 +358,34 @@ class QanoonGraphEngine:
                 q_vec_list = get_embedding(query)
                 if q_vec_list:
                     q_vec = np.array(q_vec_list, dtype=np.float32)
-                    q_norm_val = np.linalg.norm(q_vec)
-                    if q_norm_val > 0:
-                        q_vec = q_vec / q_norm_val
-                        sims = emb_matrix @ q_vec
-                        sim_lookup = {
-                            emb_ids[i]: float(sims[i])
-                            for i in range(len(emb_ids))
-                            if sims[i] > 0.42
-                        }
+                    if emb_matrix.ndim == 2 and emb_matrix.shape[1] == q_vec.shape[0]:
+                        q_norm_val = np.linalg.norm(q_vec)
+                        if q_norm_val > 0:
+                            q_vec = q_vec / q_norm_val
+                            sims = emb_matrix @ q_vec
+                            sim_lookup = {
+                                emb_ids[i]: float(sims[i])
+                                for i in range(len(emb_ids))
+                                if sims[i] > 0.42
+                            }
             except Exception:
                 sim_lookup = {}
+
+        if not sim_lookup:
+            q_tokens = set(re.findall(r"[\w\u0600-\u06FF]{2,}", q_norm))
+            if q_tokens:
+                for art in self.articles:
+                    aid = str(art.get("id") or "")
+                    if not aid:
+                        continue
+                    art_text = normalize_arabic(
+                        f"{art.get('title', '')} {art.get('legislation_title', '')} {art.get('text', '')}"
+                    )
+                    art_tokens = set(re.findall(r"[\w\u0600-\u06FF]{2,}", art_text))
+                    if art_tokens:
+                        overlap = len(q_tokens & art_tokens) / max(len(q_tokens), 1)
+                        if overlap > 0:
+                            sim_lookup[aid] = round(min(0.95, 0.35 + 0.60 * overlap), 4)
 
         stop_tokens = {
             "في", "من", "على", "الي", "عن", "مع", "ما", "هو", "هي", "هل",
